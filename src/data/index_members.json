@@ -1,0 +1,26 @@
+{
+  "last_updated": "2026-02-14",
+  "note": "Index compositions change periodically. LQ45/IDX30 rebalance every 6 months (Feb & Aug).",
+  "idx30": [
+    "ACES", "ADRO", "AMRT", "AMMN", "ASII", "BBCA", "BBNI", "BBRI", "BBTN",
+    "BMRI", "BRPT", "BREN", "CPIN", "EMTK", "ESSA", "GOTO", "HRUM",
+    "ICBP", "INDF", "INKP", "KLBF", "MDKA", "PANI", "PGEO", "SMGR",
+    "TLKM", "TOWR", "TPIA", "UNTR", "UNVR"
+  ],
+  "lq45": [
+    "ACES", "ADRO", "AKRA", "AMMN", "AMRT", "ANTM", "ASII", "BBCA", "BBNI",
+    "BBRI", "BBTN", "BMRI", "BRPT", "BREN", "BRIS", "CPIN", "CTRA",
+    "CUAN", "EMTK", "ERAA", "ESSA", "EXCL", "GOTO", "HRUM", "ICBP",
+    "INCO", "INDF", "INKP", "ISAT", "JPFA", "KLBF", "MAPI", "MBMA",
+    "MDKA", "MEDC", "PANI", "PGEO", "PTBA", "SMGR", "SRTG", "TBIG",
+    "TKIM", "TLKM", "TOWR", "TPIA", "UNTR", "UNVR"
+  ],
+  "issi": [
+    "ACES", "ADRO", "AKRA", "AMMN", "AMRT", "ANTM", "ASII", "BBCA", "BBNI",
+    "BBRI", "BBTN", "BMRI", "BRPT", "BREN", "BRIS", "BUKA", "CPIN",
+    "CTRA", "CUAN", "EMTK", "ERAA", "ESSA", "EXCL", "GOTO", "HRUM",
+    "ICBP", "INCO", "INDF", "INKP", "ISAT", "JPFA", "KLBF", "MAPI",
+    "MBMA", "MDKA", "MEDC", "PANI", "PGEO", "PTBA", "SMGR", "SRTG",
+    "TBIG", "TKIM", "TLKM", "TOWR", "TPIA", "UNTR", "UNVR"
+  ]
+}

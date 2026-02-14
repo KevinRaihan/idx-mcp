@@ -1,0 +1,27 @@
+{
+  "last_updated": "2026-02-14",
+  "description": "List of BUMN (Badan Usaha Milik Negara / State-Owned Enterprises) listed on IDX",
+  "companies": {
+    "BBRI": {"name": "Bank Rakyat Indonesia", "government_stake_pct": 53.19, "sector": "Banking"},
+    "BMRI": {"name": "Bank Mandiri", "government_stake_pct": 60.00, "sector": "Banking"},
+    "BBNI": {"name": "Bank Negara Indonesia", "government_stake_pct": 60.00, "sector": "Banking"},
+    "BBTN": {"name": "Bank Tabungan Negara", "government_stake_pct": 60.00, "sector": "Banking"},
+    "BRIS": {"name": "Bank Syariah Indonesia", "government_stake_pct": 51.00, "sector": "Banking"},
+    "TLKM": {"name": "Telkom Indonesia", "government_stake_pct": 52.09, "sector": "Telecom"},
+    "PGAS": {"name": "Perusahaan Gas Negara", "government_stake_pct": 56.96, "sector": "Energy"},
+    "JSMR": {"name": "Jasa Marga", "government_stake_pct": 70.00, "sector": "Infrastructure"},
+    "PTBA": {"name": "Bukit Asam", "government_stake_pct": 65.02, "sector": "Mining"},
+    "ANTM": {"name": "Aneka Tambang", "government_stake_pct": 65.00, "sector": "Mining"},
+    "INCO": {"name": "Vale Indonesia", "government_stake_pct": 20.49, "sector": "Mining"},
+    "SMGR": {"name": "Semen Indonesia", "government_stake_pct": 51.01, "sector": "Basic Industry"},
+    "WIKA": {"name": "Wijaya Karya", "government_stake_pct": 65.05, "sector": "Construction"},
+    "WSKT": {"name": "Waskita Karya", "government_stake_pct": 65.00, "sector": "Construction"},
+    "PTPP": {"name": "PP (Pembangunan Perumahan)", "government_stake_pct": 51.00, "sector": "Construction"},
+    "ADHI": {"name": "Adhi Karya", "government_stake_pct": 51.00, "sector": "Construction"},
+    "KAEF": {"name": "Kimia Farma", "government_stake_pct": 90.03, "sector": "Pharma"},
+    "ELSA": {"name": "Elnusa", "government_stake_pct": 41.10, "sector": "Energy Services"},
+    "PGEO": {"name": "Pertamina Geothermal", "government_stake_pct": 59.56, "sector": "Energy"},
+    "TINS": {"name": "Timah", "government_stake_pct": 65.00, "sector": "Mining"},
+    "KRAS": {"name": "Krakatau Steel", "government_stake_pct": 80.00, "sector": "Basic Industry"}
+  }
+}
