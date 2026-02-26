@@ -1,5 +1,6 @@
 """get_technicals tool — Technical indicators from historical price data."""
 
+import asyncio
 import logging
 
 import pandas as pd
@@ -49,7 +50,7 @@ async def get_technicals(ticker: str, period: str = "3mo") -> dict:
 
         # Fetch enough history for 200-day SMA even if user requested shorter period
         fetch_period = "1y" if period in ("3mo", "6mo") else "2y"
-        hist = stock.history(period=fetch_period)
+        hist = await asyncio.to_thread(stock.history, period=fetch_period)
 
         if hist.empty or len(hist) < 20:
             return {
@@ -106,9 +107,17 @@ async def get_technicals(ticker: str, period: str = "3mo") -> dict:
         macd_signal = "neutral"
         if macd_df is not None and not macd_df.empty:
             cols = macd_df.columns
-            macd_line = safe_round(float(macd_df[cols[0]].iloc[-1]), 2)
-            signal_line = safe_round(float(macd_df[cols[1]].iloc[-1]), 2)
-            histogram = safe_round(float(macd_df[cols[2]].iloc[-1]), 2)
+            # pandas_ta returns: MACD_{f}_{s}_{sig}, MACDh_{f}_{s}_{sig}, MACDs_{f}_{s}_{sig}
+            # Match by prefix to avoid positional swaps
+            macd_col   = next((c for c in cols if c.startswith("MACD_")), None)
+            hist_col   = next((c for c in cols if c.startswith("MACDh_")), None)
+            signal_col = next((c for c in cols if c.startswith("MACDs_")), None)
+            if macd_col:
+                macd_line = safe_round(float(macd_df[macd_col].iloc[-1]), 2)
+            if signal_col:
+                signal_line = safe_round(float(macd_df[signal_col].iloc[-1]), 2)
+            if hist_col:
+                histogram = safe_round(float(macd_df[hist_col].iloc[-1]), 2)
             if macd_line is not None and signal_line is not None:
                 macd_signal = "bullish" if macd_line > signal_line else "bearish"
 

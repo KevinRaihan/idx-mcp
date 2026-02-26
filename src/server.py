@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 import sys
 from pathlib import Path
@@ -33,6 +34,17 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("idx-mcp")
+
+def _sanitize_nans(obj):
+    """Recursively replace float NaN with None so json.dumps produces valid JSON."""
+    if isinstance(obj, float) and math.isnan(obj):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize_nans(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_nans(v) for v in obj]
+    return obj
+
 
 # Create MCP server
 server = Server("idx-mcp")
@@ -230,7 +242,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "suggestion": "Available tools: get_stock_price, get_financials, get_technicals, get_broker_summary, get_foreign_flow, get_stock_news, get_market_overview, get_company_profile",
             }
 
-        return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2, default=str))]
+        return [TextContent(type="text", text=json.dumps(_sanitize_nans(result), ensure_ascii=False, indent=2, default=str))]
 
     except Exception as e:
         logger.exception(f"Unhandled error in tool {name}")

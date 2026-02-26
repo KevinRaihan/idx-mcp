@@ -1,5 +1,6 @@
 """get_financials tool — Key financial metrics and ratios."""
 
+import asyncio
 import logging
 
 import yfinance as yf
@@ -64,17 +65,23 @@ async def get_financials(ticker: str, period: str = "annual") -> dict:
     try:
         yf_ticker = to_yfinance_ticker(normalized)
         stock = yf.Ticker(yf_ticker)
-        info = stock.info or {}
 
-        # Get financial statements
+        # Fetch all data concurrently — yfinance is blocking so run each in a thread
         if period == "quarterly":
-            income_stmt = stock.quarterly_financials
-            balance = stock.quarterly_balance_sheet
-            cashflow = stock.quarterly_cashflow
+            info, income_stmt, balance, cashflow = await asyncio.gather(
+                asyncio.to_thread(lambda: stock.info),
+                asyncio.to_thread(lambda: stock.quarterly_financials),
+                asyncio.to_thread(lambda: stock.quarterly_balance_sheet),
+                asyncio.to_thread(lambda: stock.quarterly_cashflow),
+            )
         else:
-            income_stmt = stock.financials
-            balance = stock.balance_sheet
-            cashflow = stock.cashflow
+            info, income_stmt, balance, cashflow = await asyncio.gather(
+                asyncio.to_thread(lambda: stock.info),
+                asyncio.to_thread(lambda: stock.financials),
+                asyncio.to_thread(lambda: stock.balance_sheet),
+                asyncio.to_thread(lambda: stock.cashflow),
+            )
+        info = info or {}
 
         # Get latest column
         inc_col = _get_latest_column(income_stmt)

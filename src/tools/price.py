@@ -1,5 +1,6 @@
 """get_stock_price tool — Current/last price and basic trading data."""
 
+import asyncio
 import logging
 
 import yfinance as yf
@@ -40,13 +41,13 @@ async def get_stock_price(ticker: str) -> dict:
     try:
         yf_ticker = to_yfinance_ticker(normalized)
         stock = yf.Ticker(yf_ticker)
-        info = stock.info
+        info = await asyncio.to_thread(lambda: stock.info)
 
         if not info or info.get("regularMarketPrice") is None:
-            # Try fast_info as fallback
+            # Try fast_info as fallback — FastInfo uses attribute access, not .get()
             try:
-                fi = stock.fast_info
-                price = fi.get("lastPrice") or fi.get("last_price")
+                fi = await asyncio.to_thread(lambda: stock.fast_info)
+                price = getattr(fi, "last_price", None) or getattr(fi, "lastPrice", None)
                 if price is None:
                     return {
                         "error": True,

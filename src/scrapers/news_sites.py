@@ -49,9 +49,29 @@ NEWS_SOURCES = [
 ]
 
 
+async def _fetch_from_source(
+    client: httpx.AsyncClient, source: dict, ticker: str
+) -> tuple[list[dict], str, bool]:
+    """Fetch and parse articles from one news source.
+
+    Returns (articles, source_name, success).
+    """
+    source_name = source["name"]
+    try:
+        url = source["search_url"].format(query=ticker)
+        resp = await client.get(url)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "lxml")
+        return _parse_articles(soup, source, source_name), source_name, True
+    except Exception as e:
+        logger.warning(f"Failed to scrape {source_name} for {ticker}: {e}")
+        return [], source_name, False
+
+
 async def scrape_news(ticker: str, limit: int = 10) -> dict:
     """Scrape recent news for a ticker from Indonesian financial media.
 
+    Fetches all sources concurrently to avoid sequential timeout accumulation.
     Returns dict with articles list and metadata.
     """
     all_articles = []
@@ -59,23 +79,15 @@ async def scrape_news(ticker: str, limit: int = 10) -> dict:
     sources_failed = []
 
     async with httpx.AsyncClient(headers=HEADERS, timeout=15.0, follow_redirects=True) as client:
-        for source in NEWS_SOURCES:
-            source_name = source["name"]
-            try:
-                await asyncio.sleep(1.5)  # Politeness delay between sources
-                url = source["search_url"].format(query=ticker)
-                resp = await client.get(url)
-                resp.raise_for_status()
+        tasks = [_fetch_from_source(client, source, ticker) for source in NEWS_SOURCES]
+        results = await asyncio.gather(*tasks)
 
-                soup = BeautifulSoup(resp.text, "lxml")
-                articles = _parse_articles(soup, source, source_name)
-                all_articles.extend(articles)
-                sources_searched.append(source_name)
-
-            except Exception as e:
-                logger.warning(f"Failed to scrape {source_name} for {ticker}: {e}")
-                sources_failed.append(source_name)
-                continue
+    for articles, source_name, success in results:
+        if success:
+            sources_searched.append(source_name)
+            all_articles.extend(articles)
+        else:
+            sources_failed.append(source_name)
 
     # Deduplicate by title similarity
     all_articles = _deduplicate_articles(all_articles)

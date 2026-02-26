@@ -1,5 +1,6 @@
 """get_market_overview tool — IHSG level, sectors, macro snapshot."""
 
+import asyncio
 import logging
 
 import yfinance as yf
@@ -37,7 +38,7 @@ async def get_market_overview(include_macro: bool = True) -> dict:
     try:
         # IHSG data
         ihsg = yf.Ticker("^JKSE")
-        ihsg_info = ihsg.info or {}
+        ihsg_info = await asyncio.to_thread(lambda: ihsg.info) or {}
 
         ihsg_price = ihsg_info.get("regularMarketPrice") or ihsg_info.get("previousClose")
         ihsg_prev = ihsg_info.get("regularMarketPreviousClose") or ihsg_info.get("previousClose")
@@ -102,7 +103,8 @@ async def _fetch_macro_data() -> dict:
     for key, yf_symbol in MACRO_TICKERS.items():
         try:
             t = yf.Ticker(yf_symbol)
-            info = t.info or {}
+            # Use default-arg binding (t=t) to capture the loop variable correctly
+            info = await asyncio.to_thread(lambda t=t: t.info) or {}
             price = info.get("regularMarketPrice") or info.get("previousClose")
             if price:
                 macro[key] = safe_round(price, 2)

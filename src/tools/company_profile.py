@@ -1,5 +1,6 @@
 """get_company_profile tool — Company info, ownership, index membership."""
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -76,7 +77,7 @@ async def get_company_profile(ticker: str) -> dict:
     try:
         yf_ticker = to_yfinance_ticker(normalized)
         stock = yf.Ticker(yf_ticker)
-        info = stock.info or {}
+        info = await asyncio.to_thread(lambda: stock.info) or {}
 
         # Load reference data
         conglomerate_map = _load_conglomerate_map()
@@ -100,7 +101,7 @@ async def get_company_profile(ticker: str) -> dict:
         # Major shareholders from yfinance
         major_shareholders = []
         try:
-            holders = stock.major_holders
+            holders = await asyncio.to_thread(lambda: stock.major_holders)
             if holders is not None and not holders.empty:
                 for _, row in holders.iterrows():
                     try:
@@ -115,7 +116,7 @@ async def get_company_profile(ticker: str) -> dict:
 
         # Institutional holders
         try:
-            inst_holders = stock.institutional_holders
+            inst_holders = await asyncio.to_thread(lambda: stock.institutional_holders)
             if inst_holders is not None and not inst_holders.empty:
                 for _, row in inst_holders.head(5).iterrows():
                     try:
