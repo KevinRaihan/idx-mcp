@@ -35,29 +35,29 @@ def _sma(series: pd.Series, length: int) -> pd.Series:
 
 def _rsi(series: pd.Series, length: int = 14) -> pd.Series:
     """Wilder-smoothed RSI."""
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
+    delta    = series.diff()
+    gain     = delta.clip(lower=0)
+    loss     = -delta.clip(upper=0)
     avg_gain = gain.ewm(alpha=1 / length, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1 / length, adjust=False).mean()
-    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rs       = avg_gain / avg_loss.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
 
 
 def _macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9):
     """Returns (macd_line, signal_line, histogram) as Series."""
-    ema_fast = _ema(series, fast)
-    ema_slow = _ema(series, slow)
-    macd_line = ema_fast - ema_slow
+    ema_fast    = _ema(series, fast)
+    ema_slow    = _ema(series, slow)
+    macd_line   = ema_fast - ema_slow
     signal_line = _ema(macd_line, signal)
-    histogram = macd_line - signal_line
+    histogram   = macd_line - signal_line
     return macd_line, signal_line, histogram
 
 
 def _stochastic(high: pd.Series, low: pd.Series, close: pd.Series,
                 k_period: int = 14, d_period: int = 3):
     """Returns (%K, %D) as Series."""
-    lowest_low = low.rolling(window=k_period).min()
+    lowest_low   = low.rolling(window=k_period).min()
     highest_high = high.rolling(window=k_period).max()
     denom = (highest_high - lowest_low).replace(0, np.nan)
     k = 100 * (close - lowest_low) / denom
@@ -72,7 +72,7 @@ def _atr(high: pd.Series, low: pd.Series, close: pd.Series,
     tr = pd.concat([
         high - low,
         (high - prev_close).abs(),
-        (low - prev_close).abs(),
+        (low  - prev_close).abs(),
     ], axis=1).max(axis=1)
     return tr.ewm(alpha=1 / length, adjust=False).mean()
 
@@ -81,10 +81,20 @@ def _safe_last(series: pd.Series, decimals: int = 2) -> float | None:
     """Return the last non-NaN value of a series, rounded."""
     if series is None or series.empty:
         return None
-    val = series.iloc[-1]
-    if val is None or (isinstance(val, float) and math.isnan(val)):
+    try:
+        val = float(series.iloc[-1])
+        return None if math.isnan(val) or math.isinf(val) else safe_round(val, decimals)
+    except (TypeError, ValueError):
         return None
-    return safe_round(float(val), decimals)
+
+
+def _safe_int(val) -> int:
+    """Convert to int, returning 0 for NaN / None / non-numeric."""
+    try:
+        f = float(val)
+        return 0 if math.isnan(f) or math.isinf(f) else int(f)
+    except (TypeError, ValueError):
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -92,15 +102,7 @@ def _safe_last(series: pd.Series, decimals: int = 2) -> float | None:
 # ---------------------------------------------------------------------------
 
 async def get_technicals(ticker: str, period: str = "3mo") -> dict:
-    """Calculate technical indicators from historical price data.
-
-    Args:
-        ticker: IDX ticker symbol
-        period: Lookback period — "3mo", "6mo", or "1y"
-
-    Returns:
-        Dict with technical indicator data or error response.
-    """
+    """Calculate technical indicators from historical price data."""
     try:
         normalized = validate_ticker(ticker)
     except ValueError as e:
@@ -112,7 +114,7 @@ async def get_technicals(ticker: str, period: str = "3mo") -> dict:
             "suggestion": "Check the ticker symbol.",
         }
 
-    period = period.lower() if period else "3mo"
+    period = (period or "3mo").lower()
     if period not in ("3mo", "6mo", "1y"):
         period = "3mo"
 
@@ -122,7 +124,7 @@ async def get_technicals(ticker: str, period: str = "3mo") -> dict:
 
     # Always fetch 1y so SMA-200 has enough data even for the 3mo view.
     fetch_period = "1y" if period in ("3mo", "6mo") else "2y"
-    yf_ticker = to_yfinance_ticker(normalized)
+    yf_ticker    = to_yfinance_ticker(normalized)
 
     try:
         result = await asyncio.wait_for(
@@ -168,7 +170,7 @@ def _fetch_and_compute(yf_ticker: str, fetch_period: str,
     Pure pandas/numpy — no numba, no JIT, typically completes in < 1 s.
     """
     stock = yf.Ticker(yf_ticker)
-    hist = stock.history(period=fetch_period)
+    hist  = stock.history(period=fetch_period)
 
     if hist.empty or len(hist) < 20:
         return {
@@ -202,7 +204,7 @@ def _fetch_and_compute(yf_ticker: str, fetch_period: str,
     golden_cross = death_cross = False
     if len(sma50_s.dropna()) >= 2 and len(sma200_s.dropna()) >= 2:
         try:
-            s50_curr, s50_prev   = float(sma50_s.iloc[-1]),  float(sma50_s.iloc[-2])
+            s50_curr,  s50_prev  = float(sma50_s.iloc[-1]),  float(sma50_s.iloc[-2])
             s200_curr, s200_prev = float(sma200_s.iloc[-1]), float(sma200_s.iloc[-2])
             golden_cross = s50_prev < s200_prev and s50_curr > s200_curr
             death_cross  = s50_prev > s200_prev and s50_curr < s200_curr
@@ -229,7 +231,8 @@ def _fetch_and_compute(yf_ticker: str, fetch_period: str,
 
     # ── Volume ───────────────────────────────────────────────────────────────
     avg_vol_20 = safe_round(float(volume.tail(20).mean()), 0) if len(volume) >= 20 else None
-    latest_vol = int(volume.iloc[-1])
+    # FIX: use _safe_int to guard against NaN volume rows (halted / suspended stocks)
+    latest_vol = _safe_int(volume.iloc[-1])
     vol_ratio  = safe_round(latest_vol / avg_vol_20, 2) if avg_vol_20 and avg_vol_20 > 0 else None
     vol_trend  = (
         "above_average" if vol_ratio and vol_ratio > 1.2
@@ -239,9 +242,9 @@ def _fetch_and_compute(yf_ticker: str, fetch_period: str,
     )
 
     # ── Support / Resistance (20-day pivot) ──────────────────────────────────
-    recent     = hist.tail(20)
-    pivot      = safe_round((float(recent["High"].max()) + float(recent["Low"].min()) + current_price) / 3, 2)
-    supports   = [safe_round(float(v), 0) for v in sorted(recent["Low"].tolist())[:3]]
+    recent      = hist.tail(20)
+    pivot       = safe_round((float(recent["High"].max()) + float(recent["Low"].min()) + current_price) / 3, 2)
+    supports    = [safe_round(float(v), 0) for v in sorted(recent["Low"].tolist())[:3]]
     resistances = [safe_round(float(v), 0) for v in sorted(recent["High"].tolist(), reverse=True)[:3]]
 
     # ── ATR ──────────────────────────────────────────────────────────────────
@@ -253,8 +256,8 @@ def _fetch_and_compute(yf_ticker: str, fetch_period: str,
     medium_term = _determine_trend(current_price, sma_50_val,  rsi_val, macd_signal)
     long_term   = _determine_trend(current_price, sma_200_val, rsi_val, macd_signal)
 
-    signals      = [short_term, medium_term, long_term]
-    overall      = (
+    signals = [short_term, medium_term, long_term]
+    overall = (
         "buy"  if signals.count("bullish") >= 2
         else "sell" if signals.count("bearish") >= 2
         else "hold"
@@ -280,10 +283,7 @@ def _fetch_and_compute(yf_ticker: str, fetch_period: str,
                 "histogram":   histogram,
                 "signal":      macd_signal,
             },
-            "stochastic": {
-                "k": stoch_k,
-                "d": stoch_d,
-            },
+            "stochastic": {"k": stoch_k, "d": stoch_d},
         },
         "volume": {
             "avg_volume_20d": int(avg_vol_20) if avg_vol_20 else None,
@@ -292,15 +292,15 @@ def _fetch_and_compute(yf_ticker: str, fetch_period: str,
             "volume_trend":   vol_trend,
         },
         "levels": {
-            "support":    supports,
-            "resistance": resistances,
+            "support":     supports,
+            "resistance":  resistances,
             "pivot_point": pivot,
-            "atr_14":     atr_val,
+            "atr_14":      atr_val,
         },
         "trend_summary": {
-            "short_term":    short_term,
-            "medium_term":   medium_term,
-            "long_term":     long_term,
+            "short_term":     short_term,
+            "medium_term":    medium_term,
+            "long_term":      long_term,
             "overall_signal": overall,
         },
         "source":        "yfinance + pandas (pure numpy)",
@@ -312,8 +312,7 @@ def _determine_trend(price: float, ma_val: float | None,
                      rsi: float | None, macd_signal: str) -> str:
     if ma_val is None:
         return "neutral"
-    score = 1 if price > ma_val else -1
-    if rsi is not None:
-        score += 1 if rsi > 60 else -1 if rsi < 40 else 0
+    score  = 1 if price > ma_val else -1
+    score += 1 if rsi is not None and rsi > 60 else -1 if rsi is not None and rsi < 40 else 0
     score += 1 if macd_signal == "bullish" else -1 if macd_signal == "bearish" else 0
     return "bullish" if score >= 2 else "bearish" if score <= -2 else "neutral"

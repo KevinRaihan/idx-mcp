@@ -3,6 +3,8 @@
 import asyncio
 import json
 import logging
+import math
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yfinance as yf
@@ -10,55 +12,45 @@ import yfinance as yf
 from ..scrapers.idx import scrape_company_profile
 from ..utils.cache import TTLCache, cache
 from ..utils.ticker import to_yfinance_ticker, validate_ticker
-from ..utils.time_utils import format_wib_iso
 
 logger = logging.getLogger("idx-mcp.tools.company_profile")
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 
+_TIMEOUT = 25.0
+
+# Module-level caches for reference JSON data (loaded once on first call)
 _conglomerate_map: dict | None = None
-_bumn_list: dict | None = None
-_index_members: dict | None = None
+_bumn_list:        dict | None = None
+_index_members:    dict | None = None
 
 
 def _load_conglomerate_map() -> dict:
     global _conglomerate_map
     if _conglomerate_map is None:
-        path = DATA_DIR / "conglomerate_map.json"
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        _conglomerate_map = data.get("mapping", {})
+        with open(DATA_DIR / "conglomerate_map.json", "r", encoding="utf-8") as f:
+            _conglomerate_map = json.load(f).get("mapping", {})
     return _conglomerate_map
 
 
 def _load_bumn_list() -> dict:
     global _bumn_list
     if _bumn_list is None:
-        path = DATA_DIR / "bumn_list.json"
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        _bumn_list = data.get("companies", {})
+        with open(DATA_DIR / "bumn_list.json", "r", encoding="utf-8") as f:
+            _bumn_list = json.load(f).get("companies", {})
     return _bumn_list
 
 
 def _load_index_members() -> dict:
     global _index_members
     if _index_members is None:
-        path = DATA_DIR / "index_members.json"
-        with open(path, "r", encoding="utf-8") as f:
+        with open(DATA_DIR / "index_members.json", "r", encoding="utf-8") as f:
             _index_members = json.load(f)
     return _index_members
 
 
 async def get_company_profile(ticker: str) -> dict:
-    """Get company profile, ownership structure, and IDX-specific classification.
-
-    Args:
-        ticker: IDX ticker symbol
-
-    Returns:
-        Dict with company profile data or error response.
-    """
+    """Get company profile, ownership structure, and IDX-specific classification."""
     try:
         normalized = validate_ticker(ticker)
     except ValueError as e:
@@ -75,125 +67,180 @@ async def get_company_profile(ticker: str) -> dict:
         return cached
 
     try:
-        yf_ticker = to_yfinance_ticker(normalized)
-        stock = yf.Ticker(yf_ticker)
-        info = await asyncio.to_thread(lambda: stock.info) or {}
-
-        # Load reference data
-        conglomerate_map = _load_conglomerate_map()
-        bumn_list = _load_bumn_list()
-        index_data = _load_index_members()
-
-        # Basic info from yfinance
-        name = info.get("longName") or info.get("shortName") or normalized
-        sector = info.get("sector")
-        industry = info.get("industry")
-        website = info.get("website")
-        description = info.get("longBusinessSummary")
-        employees = info.get("fullTimeEmployees")
-        city = info.get("city")
-
-        # Ownership
-        is_bumn = normalized in bumn_list
-        bumn_info = bumn_list.get(normalized, {})
-        conglomerate = conglomerate_map.get(normalized)
-
-        # Major shareholders from yfinance
-        major_shareholders = []
-        try:
-            holders = await asyncio.to_thread(lambda: stock.major_holders)
-            if holders is not None and not holders.empty:
-                for _, row in holders.iterrows():
-                    try:
-                        major_shareholders.append({
-                            "name": str(row.iloc[1]) if len(row) > 1 else "N/A",
-                            "pct": float(str(row.iloc[0]).replace("%", "")) if row.iloc[0] else None,
-                        })
-                    except (ValueError, IndexError):
-                        continue
-        except Exception:
-            pass
-
-        # Institutional holders
-        try:
-            inst_holders = await asyncio.to_thread(lambda: stock.institutional_holders)
-            if inst_holders is not None and not inst_holders.empty:
-                for _, row in inst_holders.head(5).iterrows():
-                    try:
-                        holder_name = row.get("Holder", "Unknown")
-                        pct = row.get("pctHeld") or row.get("% Out")
-                        if pct and isinstance(pct, (int, float)):
-                            pct = round(pct * 100, 2)
-                        major_shareholders.append({
-                            "name": str(holder_name),
-                            "pct": pct,
-                            "type": "institutional",
-                        })
-                    except Exception:
-                        continue
-        except Exception:
-            pass
-
-        # Free float and foreign ownership
-        free_float = info.get("floatShares")
-        shares_outstanding = info.get("sharesOutstanding")
-        free_float_pct = round((free_float / shares_outstanding) * 100, 2) if free_float and shares_outstanding else None
-
-        # Index membership
-        idx30_members = index_data.get("idx30", [])
-        lq45_members = index_data.get("lq45", [])
-        issi_members = index_data.get("issi", [])
-
-        # Try to get additional data from IDX scraping
-        idx_data = {}
-        try:
-            idx_data = await scrape_company_profile(normalized)
-        except Exception:
-            pass
-
-        listing_date = idx_data.get("listing_date") or info.get("firstTradeDateEpochUtc")
-        if isinstance(listing_date, (int, float)):
-            from datetime import datetime, timezone
-            listing_date = datetime.fromtimestamp(listing_date, tz=timezone.utc).strftime("%Y-%m-%d")
-
-        result = {
-            "ticker": normalized,
-            "name": name,
-            "sector_jasica": idx_data.get("sector") or sector,
-            "industry": industry,
-            "listing_date": listing_date,
-            "headquarters": city or "Jakarta",
-            "employees": employees,
-            "website": website,
-            "description": description[:500] if description else None,
-            "ownership": {
-                "major_shareholders": major_shareholders[:5] if major_shareholders else [],
-                "conglomerate_group": conglomerate,
-                "is_bumn": is_bumn,
-                "government_stake_pct": bumn_info.get("government_stake_pct") if is_bumn else None,
-                "free_float_pct": free_float_pct,
-                "foreign_ownership_pct": None,  # Would need separate data source
-                "foreign_ownership_limit_pct": None,
-            },
-            "index_membership": {
-                "lq45": normalized in lq45_members,
-                "idx30": normalized in idx30_members,
-                "issi_syariah": normalized in issi_members,
-                "msci_em": None,  # Would need separate data
-                "ftse_em": None,
-            },
-            "source": "yfinance + idx.co.id (scraped)",
+        result = await asyncio.wait_for(
+            _fetch_profile(normalized),
+            timeout=_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        return {
+            "error": True,
+            "error_type": "timeout",
+            "message": f"Company profile fetch for {normalized} timed out after {_TIMEOUT:.0f}s.",
+            "partial_data": {"ticker": normalized},
+            "suggestion": "Try again in a few seconds.",
         }
-
-        cache.set("get_company_profile", normalized, result, TTLCache.TTL_PROFILE)
-        return result
-
     except Exception as e:
         logger.exception(f"Error fetching profile for {normalized}")
         return {
             "error": True,
             "error_type": "data_unavailable",
-            "message": f"Failed to fetch company profile for {normalized}: {str(e)}",
+            "message": f"Failed to fetch company profile for {normalized}: {e}",
             "partial_data": {"ticker": normalized},
             "suggestion": "Try again later.",
         }
+
+    if not result.get("error"):
+        cache.set("get_company_profile", normalized, result, TTLCache.TTL_PROFILE)
+    return result
+
+
+async def _fetch_profile(normalized: str) -> dict:
+    """Inner coroutine — fetch all data concurrently then assemble result."""
+    yf_ticker = to_yfinance_ticker(normalized)
+    stock     = yf.Ticker(yf_ticker)
+
+    # FIX: fetch info, major_holders, institutional_holders and IDX scrape concurrently
+    info_coro         = asyncio.to_thread(lambda: stock.info)
+    major_holders_coro = asyncio.to_thread(lambda: stock.major_holders)
+    inst_holders_coro  = asyncio.to_thread(lambda: stock.institutional_holders)
+    idx_coro           = _safe_scrape_idx(normalized)
+
+    info, major_holders_raw, inst_holders_raw, idx_data = await asyncio.gather(
+        info_coro, major_holders_coro, inst_holders_coro, idx_coro,
+        return_exceptions=True,
+    )
+
+    # Normalise errors from gather
+    info           = (info or {})           if not isinstance(info, Exception)           else {}
+    idx_data       = (idx_data or {})       if not isinstance(idx_data, Exception)       else {}
+    major_holders_raw = None if isinstance(major_holders_raw, Exception) else major_holders_raw
+    inst_holders_raw  = None if isinstance(inst_holders_raw,  Exception) else inst_holders_raw
+
+    # Load reference data (in-memory after first call)
+    conglomerate_map = _load_conglomerate_map()
+    bumn_list        = _load_bumn_list()
+    index_data       = _load_index_members()
+
+    # ── Basic info ────────────────────────────────────────────────────────────
+    name        = info.get("longName") or info.get("shortName") or normalized
+    sector      = info.get("sector")
+    industry    = info.get("industry")
+    website     = info.get("website")
+    description = info.get("longBusinessSummary")
+    employees   = info.get("fullTimeEmployees")
+    city        = info.get("city")
+
+    # ── Ownership ─────────────────────────────────────────────────────────────
+    is_bumn     = normalized in bumn_list
+    bumn_info   = bumn_list.get(normalized, {})
+    conglomerate = conglomerate_map.get(normalized)
+
+    major_shareholders: list[dict] = []
+
+    # Parse major holders
+    try:
+        if major_holders_raw is not None and not major_holders_raw.empty:
+            for _, row in major_holders_raw.iterrows():
+                try:
+                    major_shareholders.append({
+                        "name": str(row.iloc[1]) if len(row) > 1 else "N/A",
+                        "pct":  _pct_str(row.iloc[0]),
+                    })
+                except (ValueError, IndexError):
+                    continue
+    except Exception:
+        pass
+
+    # Parse institutional holders
+    try:
+        if inst_holders_raw is not None and not inst_holders_raw.empty:
+            for _, row in inst_holders_raw.head(5).iterrows():
+                try:
+                    holder_name = row.get("Holder", "Unknown")
+                    pct = row.get("pctHeld") or row.get("% Out")
+                    if isinstance(pct, (int, float)) and not math.isnan(float(pct)):
+                        pct = round(float(pct) * 100, 2)
+                    else:
+                        pct = None
+                    major_shareholders.append({
+                        "name": str(holder_name),
+                        "pct":  pct,
+                        "type": "institutional",
+                    })
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    # Free float
+    free_float         = _coerce(info.get("floatShares"))
+    shares_outstanding = _coerce(info.get("sharesOutstanding"))
+    free_float_pct = (
+        round((free_float / shares_outstanding) * 100, 2)
+        if free_float and shares_outstanding and shares_outstanding != 0
+        else None
+    )
+
+    # ── Index membership ──────────────────────────────────────────────────────
+    idx30_members = index_data.get("idx30", [])
+    lq45_members  = index_data.get("lq45",  [])
+    issi_members  = index_data.get("issi",  [])
+
+    # ── Listing date ──────────────────────────────────────────────────────────
+    listing_date = idx_data.get("listing_date") or info.get("firstTradeDateEpochUtc")
+    if isinstance(listing_date, (int, float)) and not math.isnan(float(listing_date)):
+        listing_date = datetime.fromtimestamp(int(listing_date), tz=timezone.utc).strftime("%Y-%m-%d")
+
+    return {
+        "ticker":        normalized,
+        "name":          name,
+        "sector_jasica": idx_data.get("sector") or sector,
+        "industry":      industry,
+        "listing_date":  listing_date,
+        "headquarters":  city or "Jakarta",
+        "employees":     employees,
+        "website":       website,
+        "description":   description[:500] if description else None,
+        "ownership": {
+            "major_shareholders":    major_shareholders[:5],
+            "conglomerate_group":    conglomerate,
+            "is_bumn":               is_bumn,
+            "government_stake_pct":  bumn_info.get("government_stake_pct") if is_bumn else None,
+            "free_float_pct":        free_float_pct,
+            "foreign_ownership_pct": None,        # Needs separate data source
+            "foreign_ownership_limit_pct": None,
+        },
+        "index_membership": {
+            "lq45":        normalized in lq45_members,
+            "idx30":       normalized in idx30_members,
+            "issi_syariah": normalized in issi_members,
+            "msci_em":     None,  # Needs separate data
+            "ftse_em":     None,
+        },
+        "source": "yfinance + idx.co.id (scraped)",
+    }
+
+
+async def _safe_scrape_idx(ticker: str) -> dict:
+    try:
+        return await scrape_company_profile(ticker) or {}
+    except Exception:
+        return {}
+
+
+def _pct_str(val) -> float | None:
+    """Parse a percentage string like '47.15%' or a float into a float."""
+    try:
+        return float(str(val).replace("%", "").strip())
+    except (ValueError, TypeError):
+        return None
+
+
+def _coerce(val) -> float | None:
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        return None if math.isnan(f) or math.isinf(f) else f
+    except (TypeError, ValueError):
+        return None
