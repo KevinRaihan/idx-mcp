@@ -20,6 +20,14 @@ from .tools.foreign_flow import get_foreign_flow
 from .tools.news import get_stock_news
 from .tools.market_overview import get_market_overview
 from .tools.company_profile import get_company_profile
+from .tools.scanner import (
+    scan_today,
+    get_top10,
+    analyze_ticker,
+    get_prediction,
+    run_backtest,
+    get_scan_summary,
+)
 
 # Set up logging
 LOG_DIR = Path.home() / ".idx-mcp" / "logs"
@@ -191,6 +199,140 @@ TOOLS = [
             "required": ["ticker"],
         },
     ),
+    Tool(
+        name="scan_today",
+        description=(
+            "Run a full BEI MA Ketat (tight moving average) scanner across ~250 actively traded stocks. "
+            "Detects stocks where SMA 3/5/10/20/50 lines are tightly compressed (MA Kuncup pattern), "
+            "signalling a high-probability breakout setup. Returns ranked signals with confidence scores. "
+            "Scan takes ~30–90 seconds due to bulk data download."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "tick_threshold": {
+                    "type": "number",
+                    "description": "Max allowed tick-adjusted MA spread (default 6.0; lower = stricter)",
+                    "default": 6.0,
+                },
+                "vol_threshold": {
+                    "type": "number",
+                    "description": "Max 10-day rolling volatility % (default 3.8; lower = stricter)",
+                    "default": 3.8,
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="get_top10",
+        description=(
+            "Return the Top 10 MA Ketat signals from today's BEI scan, ranked by confidence score. "
+            "Uses cached scan results if available; runs fresh scan if not. "
+            "Lightweight format optimised for LLM consumption."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+    Tool(
+        name="analyze_ticker",
+        description=(
+            "Deep MA Ketat analysis for a single BEI stock. "
+            "Shows all MA values, indicator readings, whether the stock passes entry filters, "
+            "and explains why if it fails. Includes prediction if signal is present."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "IDX ticker symbol (e.g., 'BBCA')",
+                },
+                "period": {
+                    "type": "string",
+                    "description": 'Lookback period: "3mo", "6mo" (default), or "1y"',
+                    "enum": ["3mo", "6mo", "1y"],
+                    "default": "6mo",
+                },
+            },
+            "required": ["ticker"],
+        },
+    ),
+    Tool(
+        name="get_prediction",
+        description=(
+            "Get a short-term MA Ketat directional forecast for a single BEI stock. "
+            "Rule-based prediction (no ML) estimating 3–10 day expected gain range, "
+            "target prices, stop-loss, and reward/risk ratio."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "IDX ticker symbol",
+                },
+                "horizon_days": {
+                    "type": "integer",
+                    "description": "Forecast horizon in trading days (3–10, default 7)",
+                    "default": 7,
+                    "minimum": 3,
+                    "maximum": 10,
+                },
+            },
+            "required": ["ticker"],
+        },
+    ),
+    Tool(
+        name="run_backtest",
+        description=(
+            "Backtest the MA Ketat signal on a stock's historical data. "
+            "Finds all past MA Ketat trigger points and measures 7-day forward returns, "
+            "win rate, average return, and max drawdown."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "IDX ticker symbol",
+                },
+                "period": {
+                    "type": "string",
+                    "description": 'Historical lookback: "1y" (default) or "2y"',
+                    "enum": ["1y", "2y"],
+                    "default": "1y",
+                },
+                "tick_threshold": {
+                    "type": "number",
+                    "description": "MA range_ticks threshold (default 6.0)",
+                    "default": 6.0,
+                },
+                "vol_threshold": {
+                    "type": "number",
+                    "description": "Volatility threshold in % (default 3.8)",
+                    "default": 3.8,
+                },
+            },
+            "required": ["ticker"],
+        },
+    ),
+    Tool(
+        name="get_scan_summary",
+        description=(
+            "Get a natural-language summary of today's MA Ketat scan results. "
+            "Includes top-5 signal bullets, sector context, and overall market assessment. "
+            "Designed for direct LLM consumption."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
 ]
 
 
@@ -233,13 +375,44 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
         elif name == "get_company_profile":
             result = await get_company_profile(arguments["ticker"])
+        elif name == "scan_today":
+            result = await scan_today(
+                arguments.get("tick_threshold", 6.0),
+                arguments.get("vol_threshold", 3.8),
+            )
+        elif name == "get_top10":
+            result = await get_top10()
+        elif name == "analyze_ticker":
+            result = await analyze_ticker(
+                arguments["ticker"],
+                arguments.get("period", "6mo"),
+            )
+        elif name == "get_prediction":
+            result = await get_prediction(
+                arguments["ticker"],
+                arguments.get("horizon_days", 7),
+            )
+        elif name == "run_backtest":
+            result = await run_backtest(
+                arguments["ticker"],
+                arguments.get("period", "1y"),
+                arguments.get("tick_threshold", 6.0),
+                arguments.get("vol_threshold", 3.8),
+            )
+        elif name == "get_scan_summary":
+            result = await get_scan_summary()
         else:
             result = {
                 "error": True,
                 "error_type": "unknown_tool",
                 "message": f"Unknown tool: {name}",
                 "partial_data": None,
-                "suggestion": "Available tools: get_stock_price, get_financials, get_technicals, get_broker_summary, get_foreign_flow, get_stock_news, get_market_overview, get_company_profile",
+                "suggestion": (
+                    "Available tools: get_stock_price, get_financials, get_technicals, "
+                    "get_broker_summary, get_foreign_flow, get_stock_news, get_market_overview, "
+                    "get_company_profile, scan_today, get_top10, analyze_ticker, "
+                    "get_prediction, run_backtest, get_scan_summary"
+                ),
             }
 
         return [TextContent(type="text", text=json.dumps(_sanitize_nans(result), ensure_ascii=False, indent=2, default=str))]
