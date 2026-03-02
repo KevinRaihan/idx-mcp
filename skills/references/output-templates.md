@@ -264,6 +264,7 @@ Time horizon: [X months]
 SOURCES
 IDX-MCP:   get_stock_price | get_financials | get_technicals | get_broker_summary
            get_foreign_flow | get_stock_news | get_company_profile | get_market_overview
+           [MA Ketat] scan_today | get_top10 | analyze_ticker | get_prediction | run_backtest | get_scan_summary
            Retrieved: [HH:MM WIB, DD-MMM-YYYY]
 Financials: [Reporting period, e.g., FY2024 annual / Q3-2024 quarterly]
 Web:        [List any supplementary web sources used]
@@ -301,4 +302,118 @@ Context: [One sentence — e.g., "Trading near 52W high; above all MAs; RSI 62 (
 │ [TICK3]  │ [X,XXX]│ [X]x │ [X]%  │ [+X]%    │ [X.X]│ [Dist]│ SELL       │
 └──────────┴────────┴──────┴───────┴──────────┴──────┴───────┴────────────┘
 Best pick: [TICKER] — [one-line reason]
+```
+
+---
+
+## TEMPLATE 12 — MA Ketat Market Scan Results
+*(Output from scan_today / get_top10 — use for screening requests)*
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  MA KETAT SCAN  —  [DD-MMM-YYYY]  |  Scanned: [X] stocks               │
+│  Signals found: [X]  |  tick_threshold: [X]  |  vol_threshold: [X]%    │
+├───────┬─────────┬────────────┬──────────┬─────────┬────────────────────┤
+│ Rank  │ Ticker  │ Price      │ MA Spread│ Vol 10D │ Confidence / Signal │
+├───────┼─────────┼────────────┼──────────┼─────────┼────────────────────┤
+│  1    │ [TICK]  │ IDR [X,XXX]│ [X.X]t   │ [X.X]%  │ [score] — [signal] │
+│  2    │ [TICK]  │ IDR [X,XXX]│ [X.X]t   │ [X.X]%  │ [score] — [signal] │
+│  3    │ [TICK]  │ IDR [X,XXX]│ [X.X]t   │ [X.X]%  │ [score] — [signal] │
+│  4    │ [TICK]  │ IDR [X,XXX]│ [X.X]t   │ [X.X]%  │ [score] — [signal] │
+│  5    │ [TICK]  │ IDR [X,XXX]│ [X.X]t   │ [X.X]%  │ [score] — [signal] │
+│  6    │ [TICK]  │ IDR [X,XXX]│ [X.X]t   │ [X.X]%  │ [score] — [signal] │
+│  7    │ [TICK]  │ IDR [X,XXX]│ [X.X]t   │ [X.X]%  │ [score] — [signal] │
+│  8    │ [TICK]  │ IDR [X,XXX]│ [X.X]t   │ [X.X]%  │ [score] — [signal] │
+│  9    │ [TICK]  │ IDR [X,XXX]│ [X.X]t   │ [X.X]%  │ [score] — [signal] │
+│ 10    │ [TICK]  │ IDR [X,XXX]│ [X.X]t   │ [X.X]%  │ [score] — [signal] │
+└───────┴─────────┴────────────┴──────────┴─────────┴────────────────────┘
+Sector breakdown: [Sector A: X stocks] | [Sector B: X stocks] | ...
+Market context:   IHSG [X,XXX] ([+/-X.X%]) — [Risk-on / Risk-off / Neutral]
+Next step: Run analyze_ticker on top 3 for entry confirmation.
+```
+
+---
+
+## TEMPLATE 13 — MA Ketat Single Ticker Analysis
+*(Output from analyze_ticker — use for deep MA Ketat assessment of one stock)*
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  MA KETAT ANALYSIS  —  [TICKER]  |  [DD-MMM-YYYY]  |  Period: [Xmo]    │
+├──────────────────────────────────────────────────────────────────────┤
+│  MOVING AVERAGE STACK                                                   │
+├──────────────┬────────────────┬────────────────────────────────────────┤
+│ MA           │ Value          │ vs Price                               │
+├──────────────┼────────────────┼────────────────────────────────────────┤
+│ SMA 3        │ IDR [X,XXX]    │ [+/-X.X%]                             │
+│ SMA 5        │ IDR [X,XXX]    │ [+/-X.X%]                             │
+│ SMA 10       │ IDR [X,XXX]    │ [+/-X.X%]                             │
+│ SMA 20       │ IDR [X,XXX]    │ [+/-X.X%]                             │
+│ SMA 50       │ IDR [X,XXX]    │ [+/-X.X%]                             │
+├──────────────┼────────────────┼────────────────────────────────────────┤
+│ MA Spread    │ [X.X] ticks    │ [Tight ✓ / Moderate / Too wide ✗]    │
+│ Volatility   │ [X.X]% (10D)   │ [Low ✓ / High ✗]                     │
+├──────────────┴────────────────┴────────────────────────────────────────┤
+│  ENTRY FILTER RESULT                                                    │
+├────────────────────────────────────────────────────────────────────────┤
+│ Passes Entry:   [YES ✓ / NO ✗]                                         │
+│ Signal Active:  [YES ✓ / NO ✗]                                         │
+│ Result:         [ACTIVE SETUP / NEAR SETUP / NO SETUP]                 │
+│ Note:           [fail_reason or "All filters passed"]                   │
+└────────────────────────────────────────────────────────────────────────┘
+[If signal_present = true → append TEMPLATE 14 prediction block below]
+```
+
+---
+
+## TEMPLATE 14 — MA Ketat Short-Term Prediction
+*(Output from get_prediction — append to Template 13 when signal active, or standalone)*
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  MA KETAT PREDICTION  —  [TICKER]  |  Horizon: [X] trading days        │
+├──────────────┬──────────────────────────────────────────────────────────┤
+│ Current Price│ IDR [X,XXX]                                             │
+├──────────────┼──────────────────────────────────────────────────────────┤
+│ Expected Gain│ [+X.X]% — [+X.X]%  (midpoint: [+X.X]%)               │
+│ Target 1     │ IDR [X,XXX]   ([+X.X]% upside)                        │
+│ Target 2     │ IDR [X,XXX]   ([+X.X]% upside)  [skip if N/A]        │
+│ Stop Loss    │ IDR [X,XXX]   (-[X.X]% downside)                      │
+│ R:R Ratio    │ [X.X]:1   [Favorable ✓ if ≥ 2.0 / Marginal if < 1.5] │
+├──────────────┼──────────────────────────────────────────────────────────┤
+│ Basis        │ [Description of signal driver]                          │
+│ Confidence   │ [high / moderate / low]                                 │
+└──────────────┴──────────────────────────────────────────────────────────┘
+⚠️ Rule-based forecast only. Not a guarantee. Cross-check with technicals.
+```
+
+---
+
+## TEMPLATE 15 — MA Ketat Backtest Results
+*(Output from run_backtest — use to validate signal reliability)*
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  BACKTEST RESULTS  —  [TICKER]  |  Period: [X year(s)]                 │
+│  tick_threshold: [X.X]  |  vol_threshold: [X.X]%                       │
+├──────────────────────┬──────────────────────────────────────────────────┤
+│ Signals found        │ [X]   [sample quality: Small/Adequate/Large]    │
+│ Win Rate (7D)        │ [X]%  [Reliable >65% / Moderate 50-65% / Weak] │
+│ Avg Return (7D)      │ [+/-X.X]%                                       │
+│ Best Trade           │ [+X.X]%  ([DD-MMM-YYYY])                       │
+│ Worst Trade          │ [-X.X]%  ([DD-MMM-YYYY])                       │
+│ Max Drawdown         │ [-X.X]%                                         │
+├──────────────────────┴──────────────────────────────────────────────────┤
+│  SIGNAL HISTORY (last 5)                                                │
+├────────────────┬─────────────────┬──────────────────────────────────────┤
+│ Date           │ Entry Price     │ 7D Return                           │
+├────────────────┼─────────────────┼──────────────────────────────────────┤
+│ [DD-MMM-YYYY]  │ IDR [X,XXX]     │ [+/-X.X]%                          │
+│ [DD-MMM-YYYY]  │ IDR [X,XXX]     │ [+/-X.X]%                          │
+│ [DD-MMM-YYYY]  │ IDR [X,XXX]     │ [+/-X.X]%                          │
+│ [DD-MMM-YYYY]  │ IDR [X,XXX]     │ [+/-X.X]%                          │
+│ [DD-MMM-YYYY]  │ IDR [X,XXX]     │ [+/-X.X]%                          │
+└────────────────┴─────────────────┴──────────────────────────────────────┘
+Verdict: [Signal RELIABLE / MODERATE / UNRELIABLE on this ticker]
+Action:  [Proceed / Use tight stops / Avoid MA Ketat strategy for this stock]
 ```

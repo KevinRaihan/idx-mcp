@@ -37,6 +37,12 @@ Mandatory tool call sequence for a full analysis:
 7. `get_company_profile` → ownership, index membership, BUMN flag
 8. `get_market_overview` → IHSG, macro context
 
+MA Ketat tools (add when user requests screening or breakout analysis):
+- `scan_today` / `get_top10` / `get_scan_summary` → market-wide breakout screening
+- `analyze_ticker` → single-stock MA Ketat signal check (add to full analysis when relevant)
+- `get_prediction` → rule-based short-term forecast (use after confirmed MA Ketat signal)
+- `run_backtest` → historical signal validation for a specific ticker
+
 Supplement with web search ONLY when MCP data returns null/unavailable for a critical field.
 Tag every data point with confidence: `[H]` = High, `[M]` = Medium, `[L]` = Low.
 See [references/idx-mcp-guide.md](references/idx-mcp-guide.md) for confidence assignment rules.
@@ -74,6 +80,9 @@ Calculation method for entry/stop/TP levels in [references/analytics-calculation
 | Price check | Step 1 only | Header line + 1 context sentence |
 | Sector overview | Steps 1 (market overview) + 2 for top picks | Comparative scorecard table |
 | Chart image uploaded | Step 3 first, then available Steps 2, 4 | Technical-first |
+| Market scan / "What to buy today" | get_scan_summary → get_top10 → analyze_ticker top 3 | Template 12 + 13 + 14 |
+| MA Ketat deep dive (single stock) | analyze_ticker + get_prediction + run_backtest | Templates 13 + 14 + 15 |
+| Validate signal reliability | run_backtest | Template 15 only |
 
 ## Output Format Rules
 - **Zero prose sections.** All output is tables, scores, or flags.

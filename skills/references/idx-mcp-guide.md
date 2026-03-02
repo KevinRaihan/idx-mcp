@@ -17,6 +17,12 @@ what parameters to pass, what fields are returned, and how to chain calls togeth
 | `get_stock_news` | Recent news from Kontan, Bisnis, CNBC Indonesia |
 | `get_company_profile` | Ownership, index membership, BUMN flag, conglomerate group |
 | `get_market_overview` | IHSG, sectoral indices, macro (USD/IDR, BI rate, commodities) |
+| `scan_today` | Full MA Ketat scanner across ~250 stocks — ranked breakout signals |
+| `get_top10` | Top 10 MA Ketat signals from cached/fresh scan (lightweight) |
+| `analyze_ticker` | Deep MA Ketat analysis for a single stock — pass/fail + prediction |
+| `get_prediction` | Rule-based short-term directional forecast (3–10 days) |
+| `run_backtest` | Historical MA Ketat backtest — win rate, avg return, max drawdown |
+| `get_scan_summary` | Natural language narrative of today's MA Ketat scan results |
 
 ---
 
@@ -436,6 +442,213 @@ BI Rate falling      → Positive for rate-sensitive sectors (banking NIM, prope
 
 ---
 
+---
+
+## Tool 9: `scan_today`
+
+**When to call:** User asks "what to buy today", "screen the market", "find breakout setups",
+or any broad market scanning request. **Warning:** takes 30–90 seconds due to bulk data download.
+
+**Parameters:**
+```
+tick_threshold: number  — Max tick-adjusted MA spread (default 6.0; lower = stricter)
+vol_threshold:  number  — Max 10-day rolling volatility % (default 3.8; lower = stricter)
+```
+
+**Key response fields to extract:**
+```
+signals[]           → Array of stocks that pass MA Ketat filters
+  .ticker           → IDX ticker symbol
+  .confidence_score → Signal strength score (higher = stronger)
+  .ma_spread_ticks  → How tight the MAs are (lower = tighter compression)
+  .volatility       → 10-day rolling volatility %
+  .last_price       → Last traded price
+  .signal           → Signal description string
+total_scanned       → Number of stocks processed
+signals_found       → Count of passing signals
+scan_timestamp      → When the scan was run
+```
+
+**Usage pattern:**
+```
+1. Run scan_today with default params first
+2. Take top 3–5 by confidence_score
+3. Run analyze_ticker on each for detailed confirmation
+4. Run get_prediction for entry parameters on confirmed signals
+```
+
+**Confidence:** `[M]` — scanner uses daily close data, not real-time. Scan validity ~1 trading day.
+
+---
+
+## Tool 10: `get_top10`
+
+**When to call:** Faster alternative to `scan_today` when you just want the top ranked signals.
+Uses cached results if today's scan has already run; triggers a fresh scan if not.
+
+**Parameters:** None
+
+**Key response fields to extract:**
+```
+top_signals[]       → Array of top 10 ranked stocks (same schema as scan_today signals[])
+  .ticker
+  .confidence_score
+  .ma_spread_ticks
+  .volatility
+  .last_price
+  .signal
+cache_used          → true = using cached scan, false = fresh scan ran
+scan_date           → Date of the underlying scan
+```
+
+**Confidence:** `[M]` — if cache_used=true, verify scan_date matches today before acting.
+
+---
+
+## Tool 11: `analyze_ticker`
+
+**When to call:** After identifying a candidate from scan_today/get_top10, OR when user asks
+for MA Ketat analysis on a specific stock. Also use as an additional layer in full single-stock analysis.
+
+**Parameters:**
+```
+ticker: string
+period: "3mo" | "6mo" | "1y"   — default "6mo"
+```
+
+**Key response fields to extract:**
+```
+ma_values{}         → All moving average values
+  .sma_3            → 3-day SMA
+  .sma_5            → 5-day SMA
+  .sma_10           → 10-day SMA
+  .sma_20           → 20-day SMA
+  .sma_50           → 50-day SMA
+ma_spread_ticks     → Tick-adjusted range across all 5 MAs (lower = tighter)
+volatility_10d      → 10-day rolling volatility %
+passes_entry        → Boolean — does stock currently pass all MA Ketat entry filters?
+fail_reason         → If passes_entry=false, explains why (e.g., "spread too wide")
+signal_present      → Boolean — active MA Ketat signal right now?
+prediction{}        → If signal_present=true, contains short prediction (same as get_prediction)
+  .expected_gain_low
+  .expected_gain_high
+  .target_price_1
+  .stop_loss
+  .horizon_days
+```
+
+**MA Ketat interpretation:**
+```
+ma_spread_ticks ≤ 3      → Very tight compression — strongest signal
+ma_spread_ticks 3–6      → Tight compression — valid signal
+ma_spread_ticks 6–10     → Moderate — borderline, use higher vol_threshold caution
+ma_spread_ticks > 10     → Too loose — not a MA Ketat setup
+
+passes_entry = true  + signal_present = true  → Active setup, proceed to get_prediction
+passes_entry = false + signal_present = false → No setup, monitor only
+passes_entry = true  + signal_present = false → Near setup but not triggered yet
+```
+
+**Confidence:** `[H]` if period="6mo", `[M]` if period="3mo".
+
+---
+
+## Tool 12: `get_prediction`
+
+**When to call:** After confirming a valid signal via analyze_ticker, OR when user asks for
+short-term price targets ("where will XXXX go this week", "predict XXXX for 7 days").
+**Note:** Rule-based only (no ML). Treat as structured estimation, not a price guarantee.
+
+**Parameters:**
+```
+ticker:        string
+horizon_days:  integer   — Forecast horizon in trading days (3–10, default 7)
+```
+
+**Key response fields to extract:**
+```
+expected_gain_low      → Lower bound of expected % gain
+expected_gain_high     → Upper bound of expected % gain
+target_price_1         → Primary price target (IDR)
+target_price_2         → Secondary/extended target (IDR, if present)
+stop_loss              → Suggested stop-loss price (IDR)
+reward_risk_ratio      → R:R ratio (target gain / stop distance)
+horizon_days           → Forecast period confirmed
+basis                  → Description of what drives the forecast
+confidence             → Prediction confidence label (e.g., "moderate", "high")
+```
+
+**Derived calculations:**
+```
+Expected gain (midpoint) = (expected_gain_low + expected_gain_high) / 2
+Stop distance %          = (entry_price - stop_loss) / entry_price × 100
+```
+
+**When R:R < 1.5 → downgrade recommendation; R:R ≥ 2.0 → favorable entry.**
+
+**Confidence:** `[M]` — rule-based, no ML, no real-time flow data. Cross-check with get_technicals.
+
+---
+
+## Tool 13: `run_backtest`
+
+**When to call:** When user asks "does the MA Ketat signal actually work for this stock?",
+"what's the historical win rate?", or before committing significant capital to a signal.
+
+**Parameters:**
+```
+ticker:          string
+period:          "1y" | "2y"          — default "1y"
+tick_threshold:  number               — MA range_ticks threshold (default 6.0)
+vol_threshold:   number               — Volatility threshold % (default 3.8)
+```
+
+**Key response fields to extract:**
+```
+total_signals          → Number of MA Ketat triggers found in the period
+win_rate               → % of signals where 7-day forward return was positive
+avg_return_7d          → Average 7-day forward return across all signals
+max_drawdown           → Worst peak-to-trough drawdown during signal windows
+best_trade             → Best individual signal return
+worst_trade            → Worst individual signal return
+signal_dates[]         → Array of {date, entry_price, return_7d} for each historical signal
+```
+
+**Backtest quality assessment:**
+```
+total_signals < 5      → Insufficient sample — treat with caution [L]
+total_signals 5–15     → Small sample — use [M] confidence
+total_signals > 15     → Adequate sample — use [H] confidence
+
+win_rate > 65%         → Signal historically reliable for this stock
+win_rate 50–65%        → Moderate reliability — use tight stops
+win_rate < 50%         → Signal unreliable on this ticker — avoid or reduce size
+```
+
+**Confidence:** `[H]` with period="2y" and total_signals > 15. `[M]` otherwise.
+
+---
+
+## Tool 14: `get_scan_summary`
+
+**When to call:** When user wants a narrative market overview rather than raw scan data.
+Good for opening summaries, "what's the market setup today?", or briefing-style output.
+
+**Parameters:** None
+
+**Key response fields to extract:**
+```
+summary_text           → Full natural-language summary of today's scan
+top_5_bullets[]        → Array of concise signal bullets for top 5 stocks
+sector_context         → Which sectors dominate the MA Ketat signals today
+market_assessment      → Overall market setup description (e.g., "broad compression")
+scan_date              → When the underlying scan was performed
+```
+
+**Confidence:** `[M]` — narrative output; verify raw scan data for trading decisions.
+
+---
+
 ## MCP Chaining Strategy
 
 ### Full Analysis (8 calls)
@@ -452,6 +665,15 @@ BI Rate falling      → Positive for rate-sensitive sectors (banking NIM, prope
 ```
 *Calls 7-9 can run in parallel conceptually — present results together.*
 
+### Full Analysis + MA Ketat Layer (11 calls)
+Same as Full Analysis above, plus:
+```
+10. analyze_ticker(ticker, "6mo")  → MA Ketat signal check
+11. run_backtest(ticker, "1y")     → Signal historical reliability
+    → If signal_present=true: get_prediction(ticker, 7) for entry parameters
+```
+*Add these only when user asks for MA Ketat analysis, or when a valid MA Ketat signal is found.*
+
 ### Quick Analysis (5 calls)
 ```
 1. get_stock_price(ticker)
@@ -459,6 +681,25 @@ BI Rate falling      → Positive for rate-sensitive sectors (banking NIM, prope
 3. get_technicals(ticker, "6mo")
 4. get_foreign_flow(ticker, "daily")
 5. get_stock_news(ticker, 5)
+```
+
+### Market Screening / "What to buy today" (3–6 calls)
+```
+1. get_market_overview()            → Market backdrop; abort if IHSG < -1%
+2. get_scan_summary()               → Narrative overview of today's signals
+3. get_top10()                      → Ranked top 10 MA Ketat candidates
+   → For each top 3 candidates:
+4. analyze_ticker(ticker, "6mo")    → Confirm signal + pass/fail check
+5. get_prediction(ticker, 7)        → Entry parameters for confirmed signals
+6. run_backtest(ticker, "1y")       → Optional: validate signal reliability
+```
+*Use scan_today instead of get_top10 when you want to adjust thresholds.*
+
+### MA Ketat Deep Dive (single stock, 3 calls)
+```
+1. analyze_ticker(ticker, "6mo")   → Full MA Ketat assessment
+2. get_prediction(ticker, 7)       → Short-term targets
+3. run_backtest(ticker, "1y")      → Historical win rate
 ```
 
 ### Price Check Only (2 calls)
