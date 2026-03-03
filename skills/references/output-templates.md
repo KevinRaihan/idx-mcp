@@ -265,6 +265,7 @@ SOURCES
 IDX-MCP:   get_stock_price | get_financials | get_technicals | get_broker_summary
            get_foreign_flow | get_stock_news | get_company_profile | get_market_overview
            [MA Ketat] scan_today | get_top10 | analyze_ticker | get_prediction | run_backtest | get_scan_summary
+           [GoldenX] scan_golden_cross | get_top_golden_cross | analyze_golden_cross
            Retrieved: [HH:MM WIB, DD-MMM-YYYY]
 Financials: [Reporting period, e.g., FY2024 annual / Q3-2024 quarterly]
 Web:        [List any supplementary web sources used]
@@ -416,4 +417,83 @@ Next step: Run analyze_ticker on top 3 for entry confirmation.
 └────────────────┴─────────────────┴──────────────────────────────────────┘
 Verdict: [Signal RELIABLE / MODERATE / UNRELIABLE on this ticker]
 Action:  [Proceed / Use tight stops / Avoid MA Ketat strategy for this stock]
+```
+
+---
+
+## TEMPLATE 16 — Golden Cross Scan Results
+*(Output from scan_golden_cross / get_top_golden_cross — use for dip-buy screening requests)*
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  GOLDEN CROSS SCAN  —  [DD-MMM-YYYY]  |  Scanned: [X] stocks                │
+│  Signals found: [X]  |  stoch_threshold: [X]  |  min_volume: [X]K          │
+├────┬───────┬─────────┬────────┬────────┬────────┬──────────┬────────────────┤
+│Rank│Ticker │  Price  │ SMA50  │ SMA200 │Stoch %K│  RSI   │ Score / Fresh  │
+├────┼───────┼─────────┼────────┼────────┼────────┼──────────┼────────────────┤
+│  1 │[TICK] │IDR[X,X] │[X,XXX] │[X,XXX] │ [XX.X] │ [XX.X] │[XX] [✓Fresh/—] │
+│  2 │[TICK] │IDR[X,X] │[X,XXX] │[X,XXX] │ [XX.X] │ [XX.X] │[XX] [✓Fresh/—] │
+│  3 │[TICK] │IDR[X,X] │[X,XXX] │[X,XXX] │ [XX.X] │ [XX.X] │[XX] [✓Fresh/—] │
+│  4 │[TICK] │IDR[X,X] │[X,XXX] │[X,XXX] │ [XX.X] │ [XX.X] │[XX] [✓Fresh/—] │
+│  5 │[TICK] │IDR[X,X] │[X,XXX] │[X,XXX] │ [XX.X] │ [XX.X] │[XX] [✓Fresh/—] │
+│  6 │[TICK] │IDR[X,X] │[X,XXX] │[X,XXX] │ [XX.X] │ [XX.X] │[XX] [✓Fresh/—] │
+│  7 │[TICK] │IDR[X,X] │[X,XXX] │[X,XXX] │ [XX.X] │ [XX.X] │[XX] [✓Fresh/—] │
+│  8 │[TICK] │IDR[X,X] │[X,XXX] │[X,XXX] │ [XX.X] │ [XX.X] │[XX] [✓Fresh/—] │
+│  9 │[TICK] │IDR[X,X] │[X,XXX] │[X,XXX] │ [XX.X] │ [XX.X] │[XX] [✓Fresh/—] │
+│ 10 │[TICK] │IDR[X,X] │[X,XXX] │[X,XXX] │ [XX.X] │ [XX.X] │[XX] [✓Fresh/—] │
+└────┴───────┴─────────┴────────┴────────┴────────┴──────────┴────────────────┘
+Fresh = golden cross within last 10 sessions  |  Score = 0–100 confidence
+Market context: IHSG [X,XXX] ([+/-X.X%]) — [Risk-on / Risk-off / Neutral]
+Next step: Run analyze_golden_cross on top 3 for full assessment + entry parameters.
+```
+
+---
+
+## TEMPLATE 17 — Golden Cross Single Ticker Analysis
+*(Output from analyze_golden_cross — use for deep golden cross assessment of one stock)*
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  GOLDEN CROSS ANALYSIS  —  [TICKER]  |  [DD-MMM-YYYY]  |  Period: [Xy]     │
+├──────────────────────────────────────────────────────────────────────────────┤
+│  GOLDEN CROSS STATUS                                                          │
+├─────────────────────┬────────────────────┬──────────────────────────────────┤
+│ SMA50               │ IDR [X,XXX]        │ [X.X% above/below SMA200]        │
+│ SMA200              │ IDR [X,XXX]        │ [Stop anchor]                    │
+│ Cross Confirmed     │ [YES ✓ / NO ✗]     │ SMA50 [> / ≤] SMA200             │
+│ Days Since Cross    │ [X] sessions       │ [✓ Fresh (<10) / — Established]  │
+├─────────────────────┴────────────────────┴──────────────────────────────────┤
+│  STOCHASTIC SLOW (14,3,3)                                                     │
+├─────────────────────┬────────────────────┬──────────────────────────────────┤
+│ %K (Slow)           │ [XX.X]             │ [Oversold ✓ <25 / Not Oversold]  │
+│ %D (Signal line)    │ [XX.X]             │ —                                │
+│ Momentum            │ [Bullish ✓ / ✗]    │ [K≥D or fresh K>D cross]         │
+├─────────────────────┴────────────────────┴──────────────────────────────────┤
+│  OTHER INDICATORS                                                             │
+├─────────────────────┬────────────────────┬──────────────────────────────────┤
+│ RSI (14)            │ [XX.X]             │ [< 50 ✓ pullback / ≥ 50 ✗]      │
+│ Volume today        │ [X.XM shrs]        │ [vs 20D avg: X.XM]               │
+│ Dist from SMA200    │ [+X.X]%            │ [≤5% ideal / ≤10% good / >10%]  │
+├─────────────────────┴────────────────────┴──────────────────────────────────┤
+│  ENTRY FILTER RESULT                                                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Passes Filters:  [YES ✓ / NO ✗]                                              │
+│ Assessment:      [PASS — Golden cross dip-buy signal detected.]              │
+│                  [FAIL — reason1; reason2; ...]                              │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ENTRY PARAMETERS  (only if passes_filters = true)                            │
+├─────────────────────┬────────────────────────────────────────────────────────┤
+│ Entry Zone          │ IDR [X,XXX] – [X,XXX]   (±2 ticks around close)       │
+│ Stop Loss           │ IDR [X,XXX]              (SMA200 - 1 tick = [-X.X%])  │
+│ Target 1            │ IDR [X,XXX]              ([+X.X]% upside)             │
+│ Target 2            │ IDR [X,XXX]              ([+X.X]% upside)             │
+│ R:R Ratio           │ [X.X]:1                  [Favorable ✓ if ≥ 2.0]      │
+│ Signal Strength     │ [STRONG / MEDIUM / WEAK]                               │
+│ Confidence Score    │ [XX]/100                 [H≥70 / M≥50 / L<50]        │
+├─────────────────────┴────────────────────────────────────────────────────────┤
+│  PREDICTION BASIS                                                             │
+│  [Rationale text from prediction.rationale field]                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+⚠️ Stop anchored at SMA200 — exit if price closes below SMA200 on high volume.
+⚠️ Rule-based forecast only. Not a guarantee. Cross-check with technicals.
 ```

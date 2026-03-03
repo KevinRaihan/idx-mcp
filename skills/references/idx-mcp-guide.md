@@ -23,6 +23,9 @@ what parameters to pass, what fields are returned, and how to chain calls togeth
 | `get_prediction` | Rule-based short-term directional forecast (3–10 days) |
 | `run_backtest` | Historical MA Ketat backtest — win rate, avg return, max drawdown |
 | `get_scan_summary` | Natural language narrative of today's MA Ketat scan results |
+| `scan_golden_cross` | Full Golden Cross + Stochastic Oversold scan — ranked dip-buy signals |
+| `get_top_golden_cross` | Top 10 Golden Cross dip-buy signals from cached/fresh scan (lightweight) |
+| `analyze_golden_cross` | Deep Golden Cross + Stochastic analysis for a single stock — pass/fail + prediction |
 
 ---
 
@@ -649,6 +652,177 @@ scan_date              → When the underlying scan was performed
 
 ---
 
+## Tool 15: `scan_golden_cross`
+
+**When to call:** User asks "find golden cross stocks", "buy the dip in uptrend", "oversold stocks in uptrend",
+"dip buy setup", or any request for golden cross / stochastic oversold screening.
+**Warning:** Takes 30–90 seconds due to bulk data download.
+
+**Strategy logic:**
+```
+Golden cross confirmed:  SMA50 > SMA200  (long-term bullish structure)
+Price above SMA200:      trend intact — SMA200 acts as stop anchor
+Stochastic Slow %K < 25: temporarily oversold / pulled back
+Stochastic %K >= %D OR fresh K>D crossover from oversold: momentum turning up
+Volume >= 500K:          sufficient liquidity
+RSI(14) < 50:            confirms pullback, not overbought
+
+Stochastic Slow formula:
+  Fast %K  = 100 * (Close - LowestLow_14) / (HighestHigh_14 - LowestLow_14)
+  Slow %K  = SMA(fast_k, 3)    ← smoothed %K
+  %D       = SMA(slow_k, 3)    ← signal line
+```
+
+**Parameters:**
+```
+stoch_threshold: number   — Stochastic %K oversold threshold (default 25.0; lower = stricter)
+min_volume:      integer  — Minimum daily volume filter (default 500,000)
+```
+
+**Key response fields to extract:**
+```
+meta.scan_date                → Date the scan was run
+meta.total_tickers_scanned    → Number of stocks processed
+meta.total_signals_found      → Number of passing signals
+meta.parameters.stoch_threshold → Threshold used
+top_10[]                      → Top 10 ranked signals
+  .ticker                     → IDX ticker symbol
+  .close                      → Last price (IDR)
+  .golden_cross_confirmed     → Boolean — SMA50 > SMA200
+  .days_since_golden_cross    → Sessions since last SMA50>SMA200 crossover
+  .fresh_golden_cross         → Boolean — crossover within last 10 sessions
+  .sma50                      → 50-day SMA (IDR)
+  .sma200                     → 200-day SMA (IDR)
+  .stoch_k                    → Stochastic Slow %K (lower = more oversold)
+  .stoch_d                    → Stochastic Slow %D (signal line)
+  .stoch_oversold             → Boolean — K < stoch_threshold
+  .rsi                        → RSI(14) reading
+  .volume                     → Today's volume (shares)
+  .distance_from_sma200_pct   → % distance of Close above SMA200
+  .entry_zone                 → [low, high] entry range (IDR)
+  .stop_loss                  → Stop-loss price anchored at SMA200 (IDR)
+  .stop_loss_pct              → % stop distance from current close
+  .confidence_score           → 0–100 signal strength score
+  .rank                       → Rank by confidence score
+  .prediction{}               → Embedded prediction (see fields below)
+all_signals[]                 → Full list of all passing signals (same schema)
+summary_text                  → Natural language overview of scan results
+```
+
+**Confidence scoring breakdown (0–100):**
+```
+Stochastic depth         25 pts  (lower %K = deeper oversold = better dip)
+Golden cross freshness   20 pts  (≤5 sessions = 20 pts; ≤10 = 15; ≤20 = 10; older = 5)
+Stochastic momentum      15 pts  (K >= D and still rising = 15; K >= D = 10)
+RSI reading              15 pts  (30–45 ideal zone = 15; 25–55 = 10; else = 3)
+Volume vs 20D avg        15 pts  (≥2× = 15; ≥1.5× = 12; ≥1× = 9; below = 5)
+Distance above SMA200    10 pts  (≤5% = 10; ≤10% = 7; >10% = 3)
+```
+
+**Stop-loss anchor:**
+```
+Stop-loss = SMA200 - 1 tick  (one tick below the long-term trend support)
+This is different from MA Ketat which anchors at SMA20.
+```
+
+**Usage pattern:**
+```
+1. Run scan_golden_cross with default params
+2. Take top 3–5 by confidence_score
+3. Run analyze_golden_cross on each for detailed confirmation
+4. Use embedded prediction for entry parameters
+```
+
+**Confidence:** `[M]` — scanner uses daily close data, not real-time. Scan validity ~4 hours (cached).
+
+---
+
+## Tool 16: `get_top_golden_cross`
+
+**When to call:** Faster alternative to `scan_golden_cross` when you just want the top ranked dip-buy signals.
+Uses cached results if today's scan has already run; triggers a fresh scan if not.
+
+**Parameters:** None
+
+**Key response fields to extract:**
+```
+scan_date           → Date of the underlying scan
+total_scanned       → Number of stocks processed
+total_signals       → Total passing signals found
+top_10[]            → Array of top 10 ranked signals (same schema as scan_golden_cross top_10)
+summary_text        → Natural language overview
+```
+
+**Confidence:** `[M]` — if scan_date does not match today, treat as stale; re-run scan_golden_cross.
+
+---
+
+## Tool 17: `analyze_golden_cross`
+
+**When to call:** After identifying a candidate from scan_golden_cross/get_top_golden_cross, OR when user
+asks "is XXXX a golden cross setup?", "golden cross analysis for XXXX", or similar single-stock requests.
+
+**Parameters:**
+```
+ticker: string
+period: "1y" | "2y"   — default "1y". Use "2y" if stock has insufficient data for SMA200.
+```
+
+**Key response fields to extract:**
+```
+ticker                      → Normalised ticker symbol
+close                       → Last price (IDR)
+scan_date                   → Analysis date
+golden_cross{}              → Golden cross status block
+  .confirmed                → Boolean — SMA50 > SMA200 right now
+  .sma50                    → SMA50 value (IDR)
+  .sma200                   → SMA200 value (IDR)
+  .days_since_cross         → Sessions since last SMA50>SMA200 crossover (null = no cross found)
+  .fresh                    → Boolean — crossover within last 10 sessions
+stochastic{}                → Stochastic slow readings
+  .k                        → Slow %K value
+  .d                        → %D signal line value
+  .oversold                 → Boolean — K < 25
+  .momentum_bullish         → Boolean — K >= D or fresh oversold K>D crossover
+rsi                         → RSI(14) value
+volume                      → Today's volume (shares)
+vol_20d_avg                 → 20-day average volume
+distance_from_sma200_pct    → % distance of Close above SMA200
+passes_filters              → Boolean — passes all golden cross entry criteria
+assessment                  → "PASS — ..." or "FAIL — [reason]"
+signal{}                    → Present only if passes_filters=true (same as scan signal schema)
+prediction{}                → Present only if passes_filters=true
+  .horizon_days             → Forecast period (trading days)
+  .direction                → "BULLISH"
+  .strength                 → "STRONG" | "MEDIUM" | "WEAK"
+  .expected_gain_pct        → [low%, high%] expected gain range
+  .target_price             → [target_lo, target_hi] in IDR
+  .stop_loss_pct            → % stop distance (negative)
+  .reward_risk_ratio        → R:R ratio
+  .confidence_pct           → 0–100 prediction confidence
+  .rationale                → Plain-language explanation of signal drivers
+```
+
+**Golden Cross interpretation:**
+```
+confirmed=true + fresh=true  → Recently crossed — most timely entry
+confirmed=true + fresh=false → Long-standing uptrend — still valid, less urgent
+confirmed=false              → No golden cross — not a valid setup for this strategy
+
+passes_filters=true          → Active dip-buy setup — use signal + prediction for entry
+passes_filters=false         → Check assessment field for specific fail reason(s):
+  "no golden cross"          → SMA50 ≤ SMA200 — wait for uptrend establishment
+  "price below SMA200"       → Trend not intact — avoid
+  "stochastic not oversold"  → No dip yet — monitor for pullback
+  "falling knife risk"       → %K still declining — wait for stochastic momentum turn
+  "insufficient liquidity"   → Volume too low — skip or use limit orders only
+  "RSI not below 50"         → Not a confirmed pullback yet
+```
+
+**Confidence:** `[H]` if period="1y" with sufficient data. `[M]` if period="2y" only.
+
+---
+
 ## MCP Chaining Strategy
 
 ### Full Analysis (8 calls)
@@ -701,6 +875,32 @@ Same as Full Analysis above, plus:
 2. get_prediction(ticker, 7)       → Short-term targets
 3. run_backtest(ticker, "1y")      → Historical win rate
 ```
+
+### Golden Cross Screening / "Buy the dip in uptrend" (3–5 calls)
+```
+1. get_market_overview()                    → Market backdrop; assess IHSG trend
+2. get_top_golden_cross()                   → Ranked top 10 dip-buy candidates
+   → For each top 3 candidates:
+3. analyze_golden_cross(ticker, "1y")       → Confirm signal + pass/fail + prediction
+   (prediction embedded in response; no separate tool call needed)
+```
+*Use scan_golden_cross instead of get_top_golden_cross when you want to adjust stoch_threshold or min_volume.*
+
+### Golden Cross Deep Dive (single stock, 1–2 calls)
+```
+1. analyze_golden_cross(ticker, "1y")   → Full golden cross assessment + embedded prediction
+   → If passes_filters=false: check assessment field for fail reasons
+   → If passes_filters=true:  use signal + prediction from same response
+2. (Optional) get_technicals(ticker, "6mo") → Cross-check RSI/MACD from standard tech tool
+```
+
+### Full Analysis + Golden Cross Layer (10 calls)
+Same as Full Analysis (calls 1–9), plus:
+```
+10. analyze_golden_cross(ticker, "1y")  → Golden cross signal check
+    → If passes_filters=true: present dip-buy entry parameters from embedded prediction
+```
+*Add only when user asks for golden cross analysis, or when SMA50>SMA200 is confirmed in get_technicals.*
 
 ### Price Check Only (2 calls)
 ```

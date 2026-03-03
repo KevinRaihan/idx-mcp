@@ -6,7 +6,8 @@ description: >
   buy TLKM", "quick analysis GOTO", "screen ASII"). Also use for sector/market overviews,
   broker flow analysis, or any question involving IDX stock data, prices, fundamentals, or
   technicals. Triggers on: ticker symbols (2–4 uppercase letters), "IDX", "IHSG", "saham",
-  "buy/sell/hold recommendation", "bandarmology", "foreign flow", "broker summary".
+  "buy/sell/hold recommendation", "bandarmology", "foreign flow", "broker summary",
+  "golden cross", "dip buy", "stochastic oversold", "uptrend dip".
 ---
 
 # StockAnalyst Pro Skill
@@ -42,6 +43,10 @@ MA Ketat tools (add when user requests screening or breakout analysis):
 - `analyze_ticker` → single-stock MA Ketat signal check (add to full analysis when relevant)
 - `get_prediction` → rule-based short-term forecast (use after confirmed MA Ketat signal)
 - `run_backtest` → historical signal validation for a specific ticker
+
+Golden Cross tools (add when user requests golden cross / dip-buy setups):
+- `scan_golden_cross` / `get_top_golden_cross` → market-wide golden cross dip-buy screening
+- `analyze_golden_cross` → single-stock Golden Cross + Stochastic analysis (add to full analysis when relevant)
 
 Supplement with web search ONLY when MCP data returns null/unavailable for a critical field.
 Tag every data point with confidence: `[H]` = High, `[M]` = Medium, `[L]` = Low.
@@ -83,6 +88,8 @@ Calculation method for entry/stop/TP levels in [references/analytics-calculation
 | Market scan / "What to buy today" | get_scan_summary → get_top10 → analyze_ticker top 3 | Template 12 + 13 + 14 |
 | MA Ketat deep dive (single stock) | analyze_ticker + get_prediction + run_backtest | Templates 13 + 14 + 15 |
 | Validate signal reliability | run_backtest | Template 15 only |
+| Golden Cross scan / "buy the dip" | get_top_golden_cross → analyze_golden_cross top 3 | Template 16 + 17 |
+| Golden Cross deep dive (single stock) | analyze_golden_cross | Template 17 only |
 
 ## Output Format Rules
 - **Zero prose sections.** All output is tables, scores, or flags.
