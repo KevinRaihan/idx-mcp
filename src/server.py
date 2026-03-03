@@ -28,6 +28,11 @@ from .tools.scanner import (
     run_backtest,
     get_scan_summary,
 )
+from .tools.golden_cross import (
+    scan_golden_cross,
+    get_top_golden_cross,
+    analyze_golden_cross,
+)
 
 # Set up logging
 LOG_DIR = Path.home() / ".idx-mcp" / "logs"
@@ -333,6 +338,69 @@ TOOLS = [
             "required": [],
         },
     ),
+    Tool(
+        name="scan_golden_cross",
+        description=(
+            "Run a full BEI Golden Cross + Stochastic Oversold scan across ~180 actively traded stocks. "
+            "Finds stocks in a confirmed SMA50>SMA200 uptrend (golden cross) that have pulled back "
+            "to oversold stochastic levels — a 'buy the dip in an uptrend' dip-buy setup. "
+            "Returns signals ranked by confidence score (0-100). Scan takes ~30-90 seconds."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "stoch_threshold": {
+                    "type": "number",
+                    "description": "Stochastic %K oversold threshold (default 25.0; lower = stricter)",
+                    "default": 25.0,
+                },
+                "min_volume": {
+                    "type": "integer",
+                    "description": "Minimum daily volume filter (default 500,000)",
+                    "default": 500000,
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="get_top_golden_cross",
+        description=(
+            "Return the Top 10 Golden Cross dip-buy signals from today's scan. "
+            "Uses cached results if available; runs fresh scan if not. "
+            "Lightweight format optimised for LLM consumption."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    ),
+    Tool(
+        name="analyze_golden_cross",
+        description=(
+            "Deep Golden Cross + Stochastic analysis for a single BEI stock. "
+            "Shows SMA50/SMA200 status, days since golden cross, stochastic %K/%D readings, "
+            "RSI, volume, whether the stock passes all entry filters, and explains why if it fails. "
+            "Includes a rule-based directional prediction if a signal is present."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "IDX ticker symbol (e.g., 'BBCA')",
+                },
+                "period": {
+                    "type": "string",
+                    "description": 'Lookback period: "1y" (default) or "2y"',
+                    "enum": ["1y", "2y"],
+                    "default": "1y",
+                },
+            },
+            "required": ["ticker"],
+        },
+    ),
 ]
 
 
@@ -401,6 +469,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
         elif name == "get_scan_summary":
             result = await get_scan_summary()
+        elif name == "scan_golden_cross":
+            result = await scan_golden_cross(
+                arguments.get("stoch_threshold", 25.0),
+                arguments.get("min_volume", 500_000),
+            )
+        elif name == "get_top_golden_cross":
+            result = await get_top_golden_cross()
+        elif name == "analyze_golden_cross":
+            result = await analyze_golden_cross(
+                arguments["ticker"],
+                arguments.get("period", "1y"),
+            )
         else:
             result = {
                 "error": True,
@@ -411,7 +491,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     "Available tools: get_stock_price, get_financials, get_technicals, "
                     "get_broker_summary, get_foreign_flow, get_stock_news, get_market_overview, "
                     "get_company_profile, scan_today, get_top10, analyze_ticker, "
-                    "get_prediction, run_backtest, get_scan_summary"
+                    "get_prediction, run_backtest, get_scan_summary, "
+                    "scan_golden_cross, get_top_golden_cross, analyze_golden_cross"
                 ),
             }
 
