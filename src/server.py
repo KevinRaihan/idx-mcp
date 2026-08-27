@@ -12,33 +12,45 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from .tools.price import get_stock_price
-from .tools.financials import get_financials
-from .tools.technicals import get_technicals
-from .tools.broker_summary import get_broker_summary
-from .tools.foreign_flow import get_foreign_flow
-from .tools.predictions import (
-    gather_intelligence,
-    evaluate_and_log_thesis
-)
-from .tools.market_overview import get_market_overview
-from .tools.company_profile import get_company_profile
-from .tools.scanner import (
-    scan_ma_breakout,
-    get_top10,
-    analyze_ticker,
-    get_prediction,
-    run_backtest,
-    get_scan_summary,
-)
-from .tools.golden_cross import (
-    scan_golden_cross,
-    get_top_golden_cross,
-    analyze_golden_cross,
-)
-from .tools.mean_reversion import scan_mean_reversion
-from .tools.vol_squeeze import scan_volatility_squeeze
-from .tools.volume_accumulation import scan_volume_accumulation
+try:
+    from .tools.price import get_stock_price
+    from .tools.financials import get_financials
+    from .tools.technicals import get_technicals
+    from .tools.broker_summary import get_broker_summary
+    from .tools.foreign_flow import get_foreign_flow
+    from .tools.predictions import (
+        gather_intelligence,
+        evaluate_and_log_thesis
+    )
+    from .tools.market_overview import get_market_overview
+    from .tools.company_profile import get_company_profile
+    from .tools.scanner import (
+        scan_ma_breakout,
+        get_top10,
+        analyze_ticker,
+        get_prediction,
+        run_backtest,
+        get_scan_summary,
+    )
+    from .tools.golden_cross import (
+        scan_golden_cross,
+        get_top_golden_cross,
+        analyze_golden_cross,
+    )
+    from .tools.mean_reversion import scan_mean_reversion
+    from .tools.vol_squeeze import scan_volatility_squeeze
+    from .tools.volume_accumulation import scan_volume_accumulation
+except ImportError as e:
+    import logging
+    logging.error(f"Failed to import tools: {e}")
+    # Define dummy functions so the server doesn't crash on boot
+    async def _dummy(*args, **kwargs):
+        raise RuntimeError("Tools failed to load due to missing dependencies.")
+    get_stock_price = get_financials = get_technicals = get_broker_summary = get_foreign_flow = _dummy
+    gather_intelligence = evaluate_and_log_thesis = get_market_overview = get_company_profile = _dummy
+    scan_ma_breakout = get_top10 = analyze_ticker = get_prediction = run_backtest = get_scan_summary = _dummy
+    scan_golden_cross = get_top_golden_cross = analyze_golden_cross = _dummy
+    scan_mean_reversion = scan_volatility_squeeze = scan_volume_accumulation = _dummy
 
 # Set up logging
 LOG_DIR = Path.home() / ".idx-mcp" / "logs"
