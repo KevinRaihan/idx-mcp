@@ -17,7 +17,12 @@ from .tools.financials import get_financials
 from .tools.technicals import get_technicals
 from .tools.broker_summary import get_broker_summary
 from .tools.foreign_flow import get_foreign_flow
-from .tools.news import get_stock_news
+from .tools.predictions import (
+    get_trade_setup,
+    fetch_idx_news,
+    calculate_expected_value,
+    log_prediction_snapshot
+)
 from .tools.market_overview import get_market_overview
 from .tools.company_profile import get_company_profile
 from .tools.scanner import (
@@ -155,8 +160,27 @@ TOOLS = [
         },
     ),
     Tool(
-        name="get_stock_news",
-        description="Get recent news articles for an IDX stock from Indonesian financial media (Kontan, Bisnis, CNBC Indonesia).",
+        name="get_trade_setup",
+        description="Fetch OHLCV data, 20/50 SMA, and 14-day ATR for support/resistance barriers. Critical for evaluating trade setups.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "IDX ticker symbol (e.g., 'BBCA')",
+                },
+                "lookback_days": {
+                    "type": "integer",
+                    "description": "Number of days of OHLCV history to return (default 60)",
+                    "default": 60,
+                },
+            },
+            "required": ["ticker"],
+        },
+    ),
+    Tool(
+        name="fetch_idx_news",
+        description="Fetch the latest news headlines and publication dates for a company to evaluate sentiment and events. Falls back to Google News RSS if primary source is sparse.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -164,15 +188,75 @@ TOOLS = [
                     "type": "string",
                     "description": "IDX ticker symbol",
                 },
-                "limit": {
+                "max_articles": {
                     "type": "integer",
-                    "description": "Max articles to return (default 10, max 20)",
-                    "default": 10,
-                    "minimum": 1,
-                    "maximum": 20,
+                    "description": "Max articles to return (default 5)",
+                    "default": 5,
                 },
             },
             "required": ["ticker"],
+        },
+    ),
+    Tool(
+        name="calculate_expected_value",
+        description="A deterministic EV calculator that accounts for IDX standard exchange friction (broker fees + levy).",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "win_prob": {
+                    "type": "number",
+                    "description": "Probability of hitting the profit target (0.0 to 1.0)",
+                },
+                "profit_target_idr": {
+                    "type": "number",
+                    "description": "Absolute IDR profit amount if the target is reached",
+                },
+                "loss_target_idr": {
+                    "type": "number",
+                    "description": "Absolute IDR loss amount if the stop-loss is reached",
+                },
+                "buy_fee_rate": {
+                    "type": "number",
+                    "description": "Buy fee rate (default 0.0015 = 0.15%)",
+                    "default": 0.0015,
+                },
+                "sell_fee_rate": {
+                    "type": "number",
+                    "description": "Sell fee rate (default 0.0025 = 0.25%)",
+                    "default": 0.0025,
+                },
+            },
+            "required": ["win_prob", "profit_target_idr", "loss_target_idr"],
+        },
+    ),
+    Tool(
+        name="log_prediction_snapshot",
+        description="Appends the AI agent's trade thesis into a structured predictions log for forward testing.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticker": {
+                    "type": "string",
+                    "description": "IDX ticker symbol",
+                },
+                "initial_ev": {
+                    "type": "number",
+                    "description": "The calculated Expected Value at the time of prediction",
+                },
+                "ai_win_prob": {
+                    "type": "number",
+                    "description": "The estimated win probability (0.0 to 1.0)",
+                },
+                "reasoning": {
+                    "type": "string",
+                    "description": "Detailed reasoning for the trade thesis and predicted probability",
+                },
+                "target_date": {
+                    "type": "string",
+                    "description": "The date by which the prediction is expected to materialize (YYYY-MM-DD)",
+                },
+            },
+            "required": ["ticker", "initial_ev", "ai_win_prob", "reasoning", "target_date"],
         },
     ),
     Tool(
@@ -432,10 +516,31 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 arguments.get("ticker"),
                 arguments.get("period", "daily"),
             )
-        elif name == "get_stock_news":
-            result = await get_stock_news(
+        elif name == "get_trade_setup":
+            result = await get_trade_setup(
                 arguments["ticker"],
-                arguments.get("limit", 10),
+                arguments.get("lookback_days", 60),
+            )
+        elif name == "fetch_idx_news":
+            result = await fetch_idx_news(
+                arguments["ticker"],
+                arguments.get("max_articles", 5),
+            )
+        elif name == "calculate_expected_value":
+            result = await calculate_expected_value(
+                arguments["win_prob"],
+                arguments["profit_target_idr"],
+                arguments["loss_target_idr"],
+                arguments.get("buy_fee_rate", 0.0015),
+                arguments.get("sell_fee_rate", 0.0025),
+            )
+        elif name == "log_prediction_snapshot":
+            result = await log_prediction_snapshot(
+                arguments["ticker"],
+                arguments["initial_ev"],
+                arguments["ai_win_prob"],
+                arguments["reasoning"],
+                arguments["target_date"],
             )
         elif name == "get_market_overview":
             result = await get_market_overview(
@@ -489,7 +594,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "partial_data": None,
                 "suggestion": (
                     "Available tools: get_stock_price, get_financials, get_technicals, "
-                    "get_broker_summary, get_foreign_flow, get_stock_news, get_market_overview, "
+                    "get_broker_summary, get_foreign_flow, get_trade_setup, fetch_idx_news, "
+                    "calculate_expected_value, log_prediction_snapshot, get_market_overview, "
                     "get_company_profile, scan_today, get_top10, analyze_ticker, "
                     "get_prediction, run_backtest, get_scan_summary, "
                     "scan_golden_cross, get_top_golden_cross, analyze_golden_cross"
