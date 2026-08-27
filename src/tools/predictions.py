@@ -241,3 +241,45 @@ async def log_prediction_snapshot(
     except Exception as e:
         logger.exception("Failed to write prediction snapshot.")
         return {"error": True, "message": f"Failed to log prediction: {str(e)}"}
+
+
+async def gather_intelligence(ticker: str, lookback_days: int = 60, max_articles: int = 5) -> dict:
+    """Unified tool to fetch trade setup and recent news in a single call."""
+    setup_task = get_trade_setup(ticker, lookback_days)
+    news_task = fetch_idx_news(ticker, max_articles)
+    
+    setup_result, news_result = await asyncio.gather(setup_task, news_task)
+    
+    return {
+        "trade_setup": setup_result,
+        "news_catalysts": news_result,
+        "workflow_instruction": "Evaluate the setup and news to determine win_prob. Then call evaluate_and_log_thesis."
+    }
+
+
+async def evaluate_and_log_thesis(
+    ticker: str,
+    win_prob: float,
+    profit_target_idr: float,
+    loss_target_idr: float,
+    reasoning: str,
+    target_date: str,
+    buy_fee_rate: float = 0.0015,
+    sell_fee_rate: float = 0.0025
+) -> dict:
+    """Calculates EV and logs the prediction snapshot if EV is favorable."""
+    ev_result = await calculate_expected_value(
+        win_prob, profit_target_idr, loss_target_idr, buy_fee_rate, sell_fee_rate
+    )
+    
+    if ev_result.get("error"):
+        return ev_result
+        
+    log_result = await log_prediction_snapshot(
+        ticker, ev_result["ev_idr"], win_prob, reasoning, target_date
+    )
+    
+    return {
+        "expected_value_analysis": ev_result,
+        "logging_status": log_result
+    }
