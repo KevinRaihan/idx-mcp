@@ -200,7 +200,8 @@ async def log_prediction_snapshot(
     initial_ev: float, 
     ai_win_prob: float, 
     reasoning: str, 
-    target_date: str
+    target_date: str,
+    strategy_name: str
 ) -> dict:
     """Append the AI agent's trade thesis into a structured predictions_log.json file."""
     try:
@@ -211,6 +212,7 @@ async def log_prediction_snapshot(
     snapshot = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "ticker": normalized,
+        "strategy": strategy_name,
         "initial_ev": initial_ev,
         "ai_win_prob": ai_win_prob,
         "reasoning": reasoning,
@@ -264,6 +266,7 @@ async def evaluate_and_log_thesis(
     loss_target_idr: float,
     reasoning: str,
     target_date: str,
+    strategy_name: str,
     buy_fee_rate: float = 0.0015,
     sell_fee_rate: float = 0.0025
 ) -> dict:
@@ -276,7 +279,7 @@ async def evaluate_and_log_thesis(
         return ev_result
         
     log_result = await log_prediction_snapshot(
-        ticker, ev_result["ev_idr"], win_prob, reasoning, target_date
+        ticker, ev_result["ev_idr"], win_prob, reasoning, target_date, strategy_name
     )
     
     return {

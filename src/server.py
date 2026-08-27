@@ -24,7 +24,7 @@ from .tools.predictions import (
 from .tools.market_overview import get_market_overview
 from .tools.company_profile import get_company_profile
 from .tools.scanner import (
-    scan_today,
+    scan_ma_breakout,
     get_top10,
     analyze_ticker,
     get_prediction,
@@ -36,6 +36,9 @@ from .tools.golden_cross import (
     get_top_golden_cross,
     analyze_golden_cross,
 )
+from .tools.mean_reversion import scan_mean_reversion
+from .tools.vol_squeeze import scan_volatility_squeeze
+from .tools.volume_accumulation import scan_volume_accumulation
 
 # Set up logging
 LOG_DIR = Path.home() / ".idx-mcp" / "logs"
@@ -211,6 +214,10 @@ TOOLS = [
                     "type": "string",
                     "description": "The date by which the prediction is expected to materialize (YYYY-MM-DD)",
                 },
+                "strategy_name": {
+                    "type": "string",
+                    "description": "The name of the scan strategy that triggered this trade (e.g. 'scan_golden_cross', 'scan_mean_reversion')",
+                },
                 "buy_fee_rate": {
                     "type": "number",
                     "description": "Buy fee rate (default 0.0015 = 0.15%)",
@@ -222,7 +229,7 @@ TOOLS = [
                     "default": 0.0025,
                 },
             },
-            "required": ["ticker", "win_prob", "profit_target_idr", "loss_target_idr", "reasoning", "target_date"],
+            "required": ["ticker", "win_prob", "profit_target_idr", "loss_target_idr", "reasoning", "target_date", "strategy_name"],
         },
     ),
     Tool(
@@ -255,13 +262,8 @@ TOOLS = [
         },
     ),
     Tool(
-        name="scan_today",
-        description=(
-            "Run a full BEI MA Ketat (tight moving average) scanner across ~250 actively traded stocks. "
-            "Detects stocks where SMA 3/5/10/20/50 lines are tightly compressed (MA Kuncup pattern), "
-            "signalling a high-probability breakout setup. Returns ranked signals with confidence scores. "
-            "Scan takes ~30–90 seconds due to bulk data download."
-        ),
+        name="scan_ma_breakout",
+        description="Run full BEI Moving Average Breakout scan (MA Ketat) for today to find early momentum setups.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -451,6 +453,21 @@ TOOLS = [
             "required": ["ticker"],
         },
     ),
+    Tool(
+        name="scan_mean_reversion",
+        description="Run full BEI Mean Reversion scan (deep oversold). Finds stocks with RSI < 30 and price deeply below SMA20.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="scan_volatility_squeeze",
+        description="Run full BEI Volatility Squeeze scan. Finds stocks where Bollinger Bands are at 6-month lows combined with rising MACD.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="scan_volume_accumulation",
+        description="Run full BEI Volume Accumulation scan. Finds stocks trading at 300%+ of 20-day average volume with tight price spread.",
+        inputSchema={"type": "object", "properties": {}},
+    ),
 ]
 
 
@@ -496,6 +513,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 arguments["loss_target_idr"],
                 arguments["reasoning"],
                 arguments["target_date"],
+                arguments["strategy_name"],
                 arguments.get("buy_fee_rate", 0.0015),
                 arguments.get("sell_fee_rate", 0.0025),
             )
@@ -505,8 +523,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
         elif name == "get_company_profile":
             result = await get_company_profile(arguments["ticker"])
-        elif name == "scan_today":
-            result = await scan_today(
+        elif name == "scan_ma_breakout":
+            result = await scan_ma_breakout(
                 arguments.get("tick_threshold", 6.0),
                 arguments.get("vol_threshold", 3.8),
             )
@@ -539,10 +557,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "get_top_golden_cross":
             result = await get_top_golden_cross()
         elif name == "analyze_golden_cross":
-            result = await analyze_golden_cross(
-                arguments["ticker"],
-                arguments.get("period", "1y"),
-            )
+            result = await analyze_golden_cross(arguments["ticker"], arguments.get("period", "1y"))
+        elif name == "scan_mean_reversion":
+            result = await scan_mean_reversion()
+        elif name == "scan_volatility_squeeze":
+            result = await scan_volatility_squeeze()
+        elif name == "scan_volume_accumulation":
+            result = await scan_volume_accumulation()
         else:
             result = {
                 "error": True,
@@ -553,9 +574,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     "Available tools: get_stock_price, get_financials, get_technicals, "
                     "get_broker_summary, get_foreign_flow, gather_intelligence, "
                     "evaluate_and_log_thesis, get_market_overview, "
-                    "get_company_profile, scan_today, get_top10, analyze_ticker, "
+                    "get_company_profile, scan_ma_breakout, get_top10, analyze_ticker, "
                     "get_prediction, run_backtest, get_scan_summary, "
-                    "scan_golden_cross, get_top_golden_cross, analyze_golden_cross"
+                    "scan_golden_cross, get_top_golden_cross, analyze_golden_cross, "
+                    "scan_mean_reversion, scan_volatility_squeeze, scan_volume_accumulation"
                 ),
             }
 

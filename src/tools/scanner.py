@@ -560,7 +560,7 @@ def _run_full_scan(
 # MCP Tool functions
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def scan_today(tick_threshold: float = DEFAULT_TICK_THRESH,
+async def scan_ma_breakout(tick_threshold: float = DEFAULT_TICK_THRESH,
                      vol_threshold:  float = DEFAULT_VOL_THRESH) -> dict:
     """Run full BEI MA Ketat scan for today.
 
@@ -575,7 +575,7 @@ async def scan_today(tick_threshold: float = DEFAULT_TICK_THRESH,
     vol_threshold  = float(vol_threshold)  if vol_threshold  else DEFAULT_VOL_THRESH
 
     cache_key = f"scan_{tick_threshold}_{vol_threshold}"
-    cached = cache.get("scan_today", cache_key)
+    cached = cache.get("scan_ma_breakout", cache_key)
     if cached is not None:
         return cached
 
@@ -602,17 +602,17 @@ async def scan_today(tick_threshold: float = DEFAULT_TICK_THRESH,
             "suggestion": "Try again later.",
         }
 
-    cache.set("scan_today", cache_key, result, _TTL_SCAN)
+    cache.set("scan_ma_breakout", cache_key, result, _TTL_SCAN)
     return result
 
 
 async def get_top10() -> dict:
     """Return the Top 10 MA Ketat results from today's scan.
 
-    Uses cached scan if available; runs a fresh scan if not.
-    Returns lightweight JSON optimised for LLM consumption.
+    Uses cached scan_ma_breakout if available; runs a fresh scan if not.
+    Lightweight format optimised for LLM consumption.
     """
-    full = await scan_today()
+    full = await scan_ma_breakout()
     if full.get("error"):
         return full
 
