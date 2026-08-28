@@ -263,9 +263,11 @@ Time horizon: [X months]
 ─────────────────────────────────────────────────────────
 SOURCES
 IDX-MCP:   get_stock_price | get_financials | get_technicals | get_broker_summary
-           get_foreign_flow | get_stock_news | get_company_profile | get_market_overview
-           [MA Ketat] scan_today | get_top10 | analyze_ticker | get_prediction | run_backtest | get_scan_summary
+           get_foreign_flow | gather_intelligence | get_company_profile | get_market_overview
+           [MA Ketat] scan_ma_breakout | get_top10 | analyze_ticker | get_prediction | run_backtest | get_scan_summary
            [GoldenX] scan_golden_cross | get_top_golden_cross | analyze_golden_cross
+           [Ensemble] scan_mean_reversion | scan_volatility_squeeze | scan_volume_accumulation
+           [Thesis] gather_intelligence | evaluate_and_log_thesis
            Retrieved: [HH:MM WIB, DD-MMM-YYYY]
 Financials: [Reporting period, e.g., FY2024 annual / Q3-2024 quarterly]
 Web:        [List any supplementary web sources used]
@@ -308,7 +310,7 @@ Best pick: [TICKER] — [one-line reason]
 ---
 
 ## TEMPLATE 12 — MA Ketat Market Scan Results
-*(Output from scan_today / get_top10 — use for screening requests)*
+*(Output from scan_ma_breakout / get_top10 — use for screening requests)*
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
@@ -497,3 +499,68 @@ Next step: Run analyze_golden_cross on top 3 for full assessment + entry paramet
 ⚠️ Stop anchored at SMA200 — exit if price closes below SMA200 on high volume.
 ⚠️ Rule-based forecast only. Not a guarantee. Cross-check with technicals.
 ```
+
+
+---
+
+## Template 18 — Ensemble Strategy Scan
+
+*(Output from `scan_mean_reversion` / `scan_volatility_squeeze` / `scan_volume_accumulation`)*
+
+```
+🔎 [STRATEGY] SCAN — [DD-MMM-YYYY HH:MM WIB]
+Universe: [universe_size] | With data: [tickers_with_data] | Signals: [signals_found] | [elapsed_seconds]s
+Filters: [filters_applied, inline]
+
+| # | Ticker | Close | Key Metric | Volume× | Score |
+|---|--------|-------|-----------|---------|-------|
+| 1 | XXXX   | X,XXX | [metric]  | X.Xx    | XX/100 |
+```
+
+Key metric per strategy: mean reversion → `rsi` and `distance_below_sma20_pct`;
+volatility squeeze → `bb_width` vs `bb_width_6mo_min`; volume accumulation →
+`volume_ratio` and `intraday_spread_pct`.
+
+When `signals_found` is 0:
+
+```
+🔎 [STRATEGY] SCAN — [DD-MMM-YYYY HH:MM WIB]
+Universe: [universe_size] | With data: [tickers_with_data] | Signals: 0
+No stock met the [strategy] criteria today. Filters: [filters_applied].
+To widen the search, relax [named filter] and re-run.
+```
+
+Do not retry a zero-signal scan unchanged, and do not present a loosened scan as
+if it ran on default filters.
+
+---
+
+## Template 19 — Trade Thesis EV
+
+*(Output from `evaluate_and_log_thesis`)*
+
+```
+🎯 [TICKER] TRADE THESIS — [strategy_name] | Target date: [target_date]
+
+| Input | Value |
+|---|---|
+| Position value | IDR X,XXX,XXX |
+| Profit target | IDR XXX,XXX |
+| Loss target (stop) | IDR XXX,XXX |
+| Win probability | XX% |
+
+| Expected Value | Value |
+|---|---|
+| Round-trip fees | IDR XX,XXX |
+| Net win / net loss | IDR XX,XXX / IDR XX,XXX |
+| **EV** | **IDR XX,XXX** ([ev_pct_of_position]% of position) |
+| Breakeven win prob | XX.X% |
+| Edge vs breakeven | +X.X pp |
+| Verdict | [positive_edge / negative_edge] |
+
+Reasoning: [reasoning]
+Logged: [logging_status.log_file]
+```
+
+Report `negative_edge` as a no-trade with the numbers intact — never re-run with
+an inflated `win_prob` to reach a positive EV.

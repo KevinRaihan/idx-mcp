@@ -4,15 +4,13 @@ import asyncio
 import json
 import logging
 import math
-import os
 import sys
-from pathlib import Path
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 try:
+    from .mcp_compat import SDK_GENERATION, build_server, serve_stdio
+    from .utils.paths import error_log_file
     from .tools.price import get_stock_price
     from .tools.financials import get_financials
     from .tools.technicals import get_technicals
@@ -41,21 +39,21 @@ try:
     from .tools.vol_squeeze import scan_volatility_squeeze
     from .tools.volume_accumulation import scan_volume_accumulation
 except ImportError as e:
-    import logging
-    logging.error(f"Failed to import tools: {e}")
-    # Define dummy functions so the server doesn't crash on boot
-    async def _dummy(*args, **kwargs):
-        raise RuntimeError("Tools failed to load due to missing dependencies.")
-    get_stock_price = get_financials = get_technicals = get_broker_summary = get_foreign_flow = _dummy
-    gather_intelligence = evaluate_and_log_thesis = get_market_overview = get_company_profile = _dummy
-    scan_ma_breakout = get_top10 = analyze_ticker = get_prediction = run_backtest = get_scan_summary = _dummy
-    scan_golden_cross = get_top_golden_cross = analyze_golden_cross = _dummy
-    scan_mean_reversion = scan_volatility_squeeze = scan_volume_accumulation = _dummy
+    # Failing fast is the only honest option here. Substituting stubs made the
+    # server advertise 21 healthy tools that every raised at call time, so a
+    # broken install looked like a working one until the first query.
+    sys.stderr.write(
+        "idx-mcp: failed to import tools — the install is incomplete.\n"
+        f"  cause: {e.__class__.__name__}: {e}\n"
+        f"  interpreter: {sys.executable}\n"
+        "  fix: reinstall dependencies with `uv pip install -e .` "
+        "(or `pip install -r requirements.txt`) using this interpreter.\n"
+    )
+    raise SystemExit(1) from e
 
-# Set up logging
-LOG_DIR = Path.home() / ".idx-mcp" / "logs"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
-LOG_FILE = LOG_DIR / "error.log"
+# Set up logging. Everything the server writes lives under IDX_MCP_HOME
+# (default ~/.idx-mcp) so the package directory stays read-only.
+LOG_FILE = error_log_file()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,8 +75,18 @@ def _sanitize_nans(obj):
     return obj
 
 
-# Create MCP server
-server = Server("idx-mcp")
+__version__ = "1.1.0"
+
+
+class ToolArgumentError(ValueError):
+    """A required tool argument is missing or malformed."""
+
+
+def _require(arguments: dict, name: str, tool: str):
+    """Fetch a required argument, failing with a message the agent can act on."""
+    if name not in arguments or arguments[name] is None:
+        raise ToolArgumentError(f"{tool} requires the '{name}' argument.")
+    return arguments[name]
 
 
 # --- Tool definitions ---
@@ -198,7 +206,13 @@ TOOLS = [
     ),
     Tool(
         name="evaluate_and_log_thesis",
-        description="Calculates Expected Value (EV) and logs the trade thesis for forward testing. Use this after determining win_prob from gather_intelligence.",
+        description=(
+            "Calculates fee-adjusted Expected Value (EV) and logs the trade thesis for "
+            "forward testing. Fees are charged on position_value_idr (transaction value), "
+            "not on the profit/loss targets. Returns EV in IDR, the breakeven win "
+            "probability, and your edge over it. Use after determining win_prob from "
+            "gather_intelligence."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -212,11 +226,22 @@ TOOLS = [
                 },
                 "profit_target_idr": {
                     "type": "number",
-                    "description": "Absolute IDR profit amount if the target is reached",
+                    "description": "Absolute IDR profit amount if the target is reached (positive number)",
+                    "exclusiveMinimum": 0,
                 },
                 "loss_target_idr": {
                     "type": "number",
-                    "description": "Absolute IDR loss amount if the stop-loss is reached",
+                    "description": "Absolute IDR loss amount if the stop-loss is reached (positive number)",
+                    "exclusiveMinimum": 0,
+                },
+                "position_value_idr": {
+                    "type": "number",
+                    "description": (
+                        "Total IDR transaction value of the intended position "
+                        "(entry price x shares). IDX brokerage fees are charged on this, "
+                        "not on the profit/loss amounts."
+                    ),
+                    "exclusiveMinimum": 0,
                 },
                 "reasoning": {
                     "type": "string",
@@ -241,7 +266,10 @@ TOOLS = [
                     "default": 0.0025,
                 },
             },
-            "required": ["ticker", "win_prob", "profit_target_idr", "loss_target_idr", "reasoning", "target_date", "strategy_name"],
+            "required": [
+                "ticker", "win_prob", "profit_target_idr", "loss_target_idr",
+                "position_value_idr", "reasoning", "target_date", "strategy_name",
+            ],
         },
     ),
     Tool(
@@ -467,45 +495,138 @@ TOOLS = [
     ),
     Tool(
         name="scan_mean_reversion",
-        description="Run full BEI Mean Reversion scan (deep oversold). Finds stocks with RSI < 30 and price deeply below SMA20.",
-        inputSchema={"type": "object", "properties": {}},
+        description=(
+            "Run a full BEI Mean Reversion (deep oversold) scan across ~237 actively traded "
+            "stocks. Finds capitulation setups: RSI below the threshold while price sits well "
+            "under its SMA20 on real volume. Returns signals ranked by confidence score (0-100). "
+            "Scan takes ~30-90 seconds; results cache for 4 hours."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "rsi_threshold": {
+                    "type": "number",
+                    "description": "RSI(14) oversold threshold (default 30.0; lower = stricter)",
+                    "default": 30.0,
+                    "minimum": 1,
+                    "maximum": 99,
+                },
+                "min_volume": {
+                    "type": "integer",
+                    "description": "Minimum daily volume filter (default 500,000)",
+                    "default": 500000,
+                    "minimum": 0,
+                },
+                "min_below_sma20_pct": {
+                    "type": "number",
+                    "description": (
+                        "How far below SMA20 the close must sit, in percent "
+                        "(default 5.0; higher = stricter)"
+                    ),
+                    "default": 5.0,
+                    "minimum": 0,
+                },
+            },
+            "required": [],
+        },
     ),
     Tool(
         name="scan_volatility_squeeze",
-        description="Run full BEI Volatility Squeeze scan. Finds stocks where Bollinger Bands are at 6-month lows combined with rising MACD.",
-        inputSchema={"type": "object", "properties": {}},
+        description=(
+            "Run a full BEI Volatility Squeeze scan across ~237 actively traded stocks. "
+            "Finds stocks whose Bollinger Band width is at its 6-month low while the MACD "
+            "histogram is turning up — a coiled setup ahead of an expansion move. "
+            "Returns signals ranked by confidence score (0-100). "
+            "Scan takes ~30-90 seconds; results cache for 4 hours."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "min_volume": {
+                    "type": "integer",
+                    "description": "Minimum daily volume filter (default 1,000,000)",
+                    "default": 1000000,
+                    "minimum": 0,
+                },
+                "squeeze_tolerance": {
+                    "type": "number",
+                    "description": (
+                        "How close band width must be to its 125-day minimum, as a multiplier "
+                        "(default 1.10 = within 10%; lower = stricter, minimum 1.0)"
+                    ),
+                    "default": 1.10,
+                    "minimum": 1.0,
+                },
+            },
+            "required": [],
+        },
     ),
     Tool(
         name="scan_volume_accumulation",
-        description="Run full BEI Volume Accumulation scan. Finds stocks trading at 300%+ of 20-day average volume with tight price spread.",
-        inputSchema={"type": "object", "properties": {}},
+        description=(
+            "Run a full BEI Volume Accumulation scan across ~237 actively traded stocks. "
+            "Finds stocks trading at a multiple of their 20-day average volume while the "
+            "intraday range stays tight and the close holds up — quiet accumulation before "
+            "a move. Returns signals ranked by confidence score (0-100). "
+            "Scan takes ~30-90 seconds; results cache for 4 hours."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "min_volume": {
+                    "type": "integer",
+                    "description": "Minimum daily volume filter (default 1,000,000)",
+                    "default": 1000000,
+                    "minimum": 0,
+                },
+                "vol_multiple": {
+                    "type": "number",
+                    "description": (
+                        "Required multiple of the 20-day average volume "
+                        "(default 3.0 = 300%; higher = stricter)"
+                    ),
+                    "default": 3.0,
+                    "exclusiveMinimum": 0,
+                },
+                "max_spread_pct": {
+                    "type": "number",
+                    "description": (
+                        "Maximum intraday high-low spread as percent of close "
+                        "(default 5.0; lower = stricter)"
+                    ),
+                    "default": 5.0,
+                    "exclusiveMinimum": 0,
+                },
+            },
+            "required": [],
+        },
     ),
 ]
 
 
-@server.list_tools()
 async def list_tools() -> list[Tool]:
     return TOOLS
 
 
-@server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
     """Route tool calls to the appropriate handler."""
+    # Clients may omit `arguments` entirely for no-arg tools.
+    arguments = arguments or {}
     try:
         if name == "get_stock_price":
-            result = await get_stock_price(arguments["ticker"])
+            result = await get_stock_price(_require(arguments, "ticker", name))
         elif name == "get_financials":
             result = await get_financials(
-                arguments["ticker"],
+                _require(arguments, "ticker", name),
                 arguments.get("period", "annual"),
             )
         elif name == "get_technicals":
             result = await get_technicals(
-                arguments["ticker"],
+                _require(arguments, "ticker", name),
                 arguments.get("period", "3mo"),
             )
         elif name == "get_broker_summary":
-            result = await get_broker_summary(arguments["ticker"])
+            result = await get_broker_summary(_require(arguments, "ticker", name))
         elif name == "get_foreign_flow":
             result = await get_foreign_flow(
                 arguments.get("ticker"),
@@ -513,19 +634,20 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )
         elif name == "gather_intelligence":
             result = await gather_intelligence(
-                arguments["ticker"],
+                _require(arguments, "ticker", name),
                 arguments.get("lookback_days", 60),
                 arguments.get("max_articles", 5),
             )
         elif name == "evaluate_and_log_thesis":
             result = await evaluate_and_log_thesis(
-                arguments["ticker"],
-                arguments["win_prob"],
-                arguments["profit_target_idr"],
-                arguments["loss_target_idr"],
-                arguments["reasoning"],
-                arguments["target_date"],
-                arguments["strategy_name"],
+                _require(arguments, "ticker", name),
+                _require(arguments, "win_prob", name),
+                _require(arguments, "profit_target_idr", name),
+                _require(arguments, "loss_target_idr", name),
+                _require(arguments, "position_value_idr", name),
+                _require(arguments, "reasoning", name),
+                _require(arguments, "target_date", name),
+                _require(arguments, "strategy_name", name),
                 arguments.get("buy_fee_rate", 0.0015),
                 arguments.get("sell_fee_rate", 0.0025),
             )
@@ -534,7 +656,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 arguments.get("include_macro", True),
             )
         elif name == "get_company_profile":
-            result = await get_company_profile(arguments["ticker"])
+            result = await get_company_profile(_require(arguments, "ticker", name))
         elif name == "scan_ma_breakout":
             result = await scan_ma_breakout(
                 arguments.get("tick_threshold", 6.0),
@@ -544,17 +666,17 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await get_top10()
         elif name == "analyze_ticker":
             result = await analyze_ticker(
-                arguments["ticker"],
+                _require(arguments, "ticker", name),
                 arguments.get("period", "6mo"),
             )
         elif name == "get_prediction":
             result = await get_prediction(
-                arguments["ticker"],
+                _require(arguments, "ticker", name),
                 arguments.get("horizon_days", 7),
             )
         elif name == "run_backtest":
             result = await run_backtest(
-                arguments["ticker"],
+                _require(arguments, "ticker", name),
                 arguments.get("period", "1y"),
                 arguments.get("tick_threshold", 6.0),
                 arguments.get("vol_threshold", 3.8),
@@ -569,13 +691,24 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "get_top_golden_cross":
             result = await get_top_golden_cross()
         elif name == "analyze_golden_cross":
-            result = await analyze_golden_cross(arguments["ticker"], arguments.get("period", "1y"))
+            result = await analyze_golden_cross(_require(arguments, "ticker", name), arguments.get("period", "1y"))
         elif name == "scan_mean_reversion":
-            result = await scan_mean_reversion()
+            result = await scan_mean_reversion(
+                arguments.get("rsi_threshold", 30.0),
+                arguments.get("min_volume", 500_000),
+                arguments.get("min_below_sma20_pct", 5.0),
+            )
         elif name == "scan_volatility_squeeze":
-            result = await scan_volatility_squeeze()
+            result = await scan_volatility_squeeze(
+                arguments.get("min_volume", 1_000_000),
+                arguments.get("squeeze_tolerance", 1.10),
+            )
         elif name == "scan_volume_accumulation":
-            result = await scan_volume_accumulation()
+            result = await scan_volume_accumulation(
+                arguments.get("min_volume", 1_000_000),
+                arguments.get("vol_multiple", 3.0),
+                arguments.get("max_spread_pct", 5.0),
+            )
         else:
             result = {
                 "error": True,
@@ -595,6 +728,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         return [TextContent(type="text", text=json.dumps(_sanitize_nans(result), ensure_ascii=False, indent=2, default=str))]
 
+    except ToolArgumentError as e:
+        logger.warning("Invalid arguments for tool %s: %s", name, e)
+        return [TextContent(type="text", text=json.dumps({
+            "error": True,
+            "error_type": "invalid_arguments",
+            "message": str(e),
+            "partial_data": None,
+            "suggestion": "Check the tool's inputSchema and resend with the required arguments.",
+        }, ensure_ascii=False, indent=2))]
+
     except Exception as e:
         logger.exception(f"Unhandled error in tool {name}")
         error_result = {
@@ -609,9 +752,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 async def run():
     """Run the MCP server using stdio transport."""
-    logger.info("Starting idx-mcp server...")
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+    logger.info(
+        "Starting idx-mcp %s (mcp SDK %s, %d tools)",
+        __version__, SDK_GENERATION, len(TOOLS),
+    )
+    server = build_server("idx-mcp", __version__, list_tools, call_tool)
+    await serve_stdio(server)
 
 
 def main():

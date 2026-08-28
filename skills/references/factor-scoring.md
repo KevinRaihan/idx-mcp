@@ -346,7 +346,7 @@ Score 1: < 1%   (no foreign interest)
 
 ## FACTOR 6 — FLOW & SENTIMENT (10%)
 
-**Source:** `get_foreign_flow`, `get_broker_summary`, `get_stock_news`
+**Source:** `get_foreign_flow`, `get_broker_summary`, `gather_intelligence`
 
 ### 6A. Net Foreign Flow (30-day)
 ```
@@ -370,7 +370,7 @@ Score 1: Foreign institutional brokers among top sellers, net negative
 
 ### 6C. Analyst & News Consensus
 ```
-Source: get_stock_news + web search for analyst ratings
+Source: gather_intelligence + web search for analyst ratings
 Score 5: 3+ recent positive catalysts OR Strong Buy consensus
 Score 4: 1-2 positive catalysts OR Buy consensus
 Score 3: Neutral news OR Hold consensus

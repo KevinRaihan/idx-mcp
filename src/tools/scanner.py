@@ -20,6 +20,7 @@ import yfinance as yf
 
 from ..utils.cache import cache
 from ..utils.formatting import safe_round
+from ..utils.ohlcv import drop_incomplete_bars
 from ..utils.ticker import validate_ticker
 from ..utils.time_utils import format_wib_iso, now_wib
 
@@ -446,7 +447,9 @@ def _build_summary(signals: list[dict], total_scanned: int) -> str:
 
 # ── Batch OHLCV download (sync, runs in thread) ───────────────────────────────
 
-def _download_batch(jk_tickers: list[str], period: str = "1y") -> dict[str, pd.DataFrame]:
+def _download_batch(
+    jk_tickers: list[str], period: str = "1y", min_rows: int = 20
+) -> dict[str, pd.DataFrame]:
     """Batch-download OHLCV for a list of .JK tickers.
 
     yfinance 1.x always returns (Ticker, Field) MultiIndex when tickers is a list
@@ -479,16 +482,18 @@ def _download_batch(jk_tickers: list[str], period: str = "1y") -> dict[str, pd.D
     if isinstance(raw.columns, pd.MultiIndex):
         for jk in jk_tickers:
             try:
-                df = raw[jk].dropna(how="all").copy()
-                if not df.empty and len(df) >= 20 and "Close" in df.columns:
+                df = drop_incomplete_bars(raw[jk]).copy()
+                if not df.empty and len(df) >= min_rows and "Close" in df.columns:
                     results[_strip_jk(jk)] = df
-            except (KeyError, Exception):
+            except Exception as e:
+                # Delisted / suspended tickers are absent from the frame; expected.
+                logger.debug("no usable data for %s: %s", jk, e)
                 continue
     else:
         # Fallback: flat columns (older yfinance or edge case)
         ticker_clean = _strip_jk(jk_tickers[0])
-        df = raw.dropna(how="all").copy()
-        if not df.empty and len(df) >= 20 and "Close" in df.columns:
+        df = drop_incomplete_bars(raw).copy()
+        if not df.empty and len(df) >= min_rows and "Close" in df.columns:
             results[ticker_clean] = df
 
     return results

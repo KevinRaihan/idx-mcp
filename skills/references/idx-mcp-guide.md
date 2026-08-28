@@ -14,10 +14,11 @@ what parameters to pass, what fields are returned, and how to chain calls togeth
 | `get_technicals` | Moving averages, RSI, MACD, Stochastic, support/resistance |
 | `get_broker_summary` | Top buying/selling brokers, net flow by broker code |
 | `get_foreign_flow` | Net foreign buy/sell (daily, weekly, monthly) |
-| `get_stock_news` | Recent news from Kontan, Bisnis, CNBC Indonesia |
+| `gather_intelligence` | Trade setup (price, SMA20/50, ATR barriers) + recent news catalysts, in one call |
+| `evaluate_and_log_thesis` | Fee-adjusted Expected Value for a thesis, logged for forward testing |
 | `get_company_profile` | Ownership, index membership, BUMN flag, conglomerate group |
 | `get_market_overview` | IHSG, sectoral indices, macro (USD/IDR, BI rate, commodities) |
-| `scan_today` | Full MA Ketat scanner across ~250 stocks — ranked breakout signals |
+| `scan_ma_breakout` | Full MA Ketat scanner across the 178-stock BEI universe — ranked breakout signals |
 | `get_top10` | Top 10 MA Ketat signals from cached/fresh scan (lightweight) |
 | `analyze_ticker` | Deep MA Ketat analysis for a single stock — pass/fail + prediction |
 | `get_prediction` | Rule-based short-term directional forecast (3–10 days) |
@@ -26,6 +27,9 @@ what parameters to pass, what fields are returned, and how to chain calls togeth
 | `scan_golden_cross` | Full Golden Cross + Stochastic Oversold scan — ranked dip-buy signals |
 | `get_top_golden_cross` | Top 10 Golden Cross dip-buy signals from cached/fresh scan (lightweight) |
 | `analyze_golden_cross` | Deep Golden Cross + Stochastic analysis for a single stock — pass/fail + prediction |
+| `scan_mean_reversion` | Deep-oversold capitulation scan — RSI low, price well below SMA20 |
+| `scan_volatility_squeeze` | Bollinger width at a 6-month low with MACD turning up |
+| `scan_volume_accumulation` | Volume spike on a tight intraday range and an up close |
 
 ---
 
@@ -309,7 +313,7 @@ Price DOWN + foreign flow SELLING → Confirming downtrend
 
 ---
 
-## Tool 6: `get_stock_news`
+## Tool 6: `gather_intelligence`
 
 **Parameters:**
 ```
@@ -447,7 +451,7 @@ BI Rate falling      → Positive for rate-sensitive sectors (banking NIM, prope
 
 ---
 
-## Tool 9: `scan_today`
+## Tool 9: `scan_ma_breakout`
 
 **When to call:** User asks "what to buy today", "screen the market", "find breakout setups",
 or any broad market scanning request. **Warning:** takes 30–90 seconds due to bulk data download.
@@ -474,7 +478,7 @@ scan_timestamp      → When the scan was run
 
 **Usage pattern:**
 ```
-1. Run scan_today with default params first
+1. Run scan_ma_breakout with default params first
 2. Take top 3–5 by confidence_score
 3. Run analyze_ticker on each for detailed confirmation
 4. Run get_prediction for entry parameters on confirmed signals
@@ -486,14 +490,14 @@ scan_timestamp      → When the scan was run
 
 ## Tool 10: `get_top10`
 
-**When to call:** Faster alternative to `scan_today` when you just want the top ranked signals.
+**When to call:** Faster alternative to `scan_ma_breakout` when you just want the top ranked signals.
 Uses cached results if today's scan has already run; triggers a fresh scan if not.
 
 **Parameters:** None
 
 **Key response fields to extract:**
 ```
-top_signals[]       → Array of top 10 ranked stocks (same schema as scan_today signals[])
+top_signals[]       → Array of top 10 ranked stocks (same schema as scan_ma_breakout signals[])
   .ticker
   .confidence_score
   .ma_spread_ticks
@@ -510,7 +514,7 @@ scan_date           → Date of the underlying scan
 
 ## Tool 11: `analyze_ticker`
 
-**When to call:** After identifying a candidate from scan_today/get_top10, OR when user asks
+**When to call:** After identifying a candidate from scan_ma_breakout/get_top10, OR when user asks
 for MA Ketat analysis on a specific stock. Also use as an additional layer in full single-stock analysis.
 
 **Parameters:**
@@ -835,7 +839,7 @@ passes_filters=false         → Check assessment field for specific fail reason
 6. get_technicals(ticker, "6mo") → Technical picture
 7. get_broker_summary(ticker)    → Who's buying/selling
 8. get_foreign_flow(ticker, "monthly") → Foreign positioning
-9. get_stock_news(ticker, 10)    → Catalysts
+9. gather_intelligence(ticker)    → Catalysts
 ```
 *Calls 7-9 can run in parallel conceptually — present results together.*
 
@@ -854,7 +858,7 @@ Same as Full Analysis above, plus:
 2. get_financials(ticker, "annual")
 3. get_technicals(ticker, "6mo")
 4. get_foreign_flow(ticker, "daily")
-5. get_stock_news(ticker, 5)
+5. gather_intelligence(ticker)
 ```
 
 ### Market Screening / "What to buy today" (3–6 calls)
@@ -867,7 +871,7 @@ Same as Full Analysis above, plus:
 5. get_prediction(ticker, 7)        → Entry parameters for confirmed signals
 6. run_backtest(ticker, "1y")       → Optional: validate signal reliability
 ```
-*Use scan_today instead of get_top10 when you want to adjust thresholds.*
+*Use scan_ma_breakout instead of get_top10 when you want to adjust thresholds.*
 
 ### MA Ketat Deep Dive (single stock, 3 calls)
 ```
@@ -932,3 +936,97 @@ Same as Full Analysis (calls 1–9), plus:
 | Commodity sensitivity | `[SECTOR] coal/CPO/nickel price impact revenue sensitivity` |
 | Corporate action detail | `[TICKER] corporate action rights issue dividend announcement` |
 | Bandarmology detail | `[TICKER] bandarmology accumulation distribution stockbit` |
+
+---
+
+## v1.1 Tools
+
+### `gather_intelligence` — step 1 of the trade workflow
+
+```
+gather_intelligence(ticker, lookback_days=60, max_articles=5)
+```
+
+Returns:
+
+```
+trade_setup.current_price        → Last completed close (IDR)
+trade_setup.sma_20 / sma_50      → Simple moving averages
+trade_setup.atr_14               → 14-day ATR (Wilder)
+trade_setup.support_barrier      → current_price - 2*ATR
+trade_setup.resistance_barrier   → current_price + 2*ATR
+trade_setup.ohlcv_data[]         → Recent bars: date, open, high, low, close, volume
+news_catalysts.articles[]        → title, publisher, publish_time, link, source
+```
+
+The two legs fail independently: if news is unavailable you still get the setup,
+and the failed leg carries `error: true` with a message. Check each leg before use.
+
+### `evaluate_and_log_thesis` — step 2 of the trade workflow
+
+```
+evaluate_and_log_thesis(
+  ticker, win_prob, profit_target_idr, loss_target_idr,
+  position_value_idr, reasoning, target_date, strategy_name,
+  buy_fee_rate=0.0015, sell_fee_rate=0.0025)
+```
+
+**`position_value_idr` is required.** IDX brokerage fees are charged on
+transaction value, not on the trade's profit or loss:
+
+```
+fees_total = position_value_idr * (buy_fee_rate + sell_fee_rate)
+net_win    = profit_target_idr - fees_total
+net_loss   = loss_target_idr   + fees_total
+ev         = win_prob * net_win - (1 - win_prob) * net_loss
+```
+
+Pass `profit_target_idr` and `loss_target_idr` as positive magnitudes.
+`target_date` must be `YYYY-MM-DD`.
+
+Returns:
+
+```
+expected_value_analysis.ev_idr              → Fee-adjusted expected value
+expected_value_analysis.ev_pct_of_position  → EV as % of capital deployed
+expected_value_analysis.fees_total_idr      → Round-trip friction
+expected_value_analysis.breakeven_win_prob  → win_prob at which EV == 0
+expected_value_analysis.edge_vs_breakeven   → win_prob - breakeven
+ev_verdict                                  → "positive_edge" | "negative_edge"
+logging_status                              → Confirmation + log path
+```
+
+Every valid thesis is logged, including negative-EV ones — forward testing needs
+the rejected trades too. Report a negative verdict as a no-trade; do not retry
+with a higher `win_prob` to manufacture an edge.
+
+### Ensemble scanners
+
+| Tool | Parameters (defaults) |
+|---|---|
+| `scan_mean_reversion` | `rsi_threshold` (30.0), `min_volume` (500000), `min_below_sma20_pct` (5.0) |
+| `scan_volatility_squeeze` | `min_volume` (1000000), `squeeze_tolerance` (1.10) |
+| `scan_volume_accumulation` | `min_volume` (1000000), `vol_multiple` (3.0), `max_spread_pct` (5.0) |
+
+Shared response shape:
+
+```
+strategy              → Strategy identifier
+scan_time_wib         → ISO timestamp (WIB)
+elapsed_seconds       → Scan duration
+universe_size         → Tickers in the BEI universe (178)
+tickers_with_data     → Tickers that returned usable price history
+tickers_without_data  → Delisted / suspended / thin
+signals_found         → Total matches before truncation
+filters_applied       → Echo of the thresholds used
+top_10[]              → Up to 10 matches, sorted by confidence_score desc
+disclaimer            → Required in the report footer
+```
+
+**Reading the counts:** a low `tickers_with_data` relative to `universe_size`
+means the upstream feed is degraded — say so rather than reporting a quiet
+market. `signals_found: 0` with a healthy `tickers_with_data` is a genuine
+"nothing qualifies today".
+
+Defaults are deliberately strict. To widen the net, relax one filter at a time
+and state which one you changed in the output.
