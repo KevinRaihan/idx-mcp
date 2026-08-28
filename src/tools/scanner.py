@@ -20,6 +20,7 @@ import yfinance as yf
 
 from ..utils.cache import cache
 from ..utils.formatting import safe_round
+from ..utils.ohlcv import drop_incomplete_bars
 from ..utils.ticker import validate_ticker
 from ..utils.time_utils import format_wib_iso, now_wib
 
@@ -446,7 +447,9 @@ def _build_summary(signals: list[dict], total_scanned: int) -> str:
 
 # ── Batch OHLCV download (sync, runs in thread) ───────────────────────────────
 
-def _download_batch(jk_tickers: list[str], period: str = "1y") -> dict[str, pd.DataFrame]:
+def _download_batch(
+    jk_tickers: list[str], period: str = "1y", min_rows: int = 20
+) -> dict[str, pd.DataFrame]:
     """Batch-download OHLCV for a list of .JK tickers.
 
     yfinance 1.x always returns (Ticker, Field) MultiIndex when tickers is a list
@@ -479,16 +482,18 @@ def _download_batch(jk_tickers: list[str], period: str = "1y") -> dict[str, pd.D
     if isinstance(raw.columns, pd.MultiIndex):
         for jk in jk_tickers:
             try:
-                df = raw[jk].dropna(how="all").copy()
-                if not df.empty and len(df) >= 20 and "Close" in df.columns:
+                df = drop_incomplete_bars(raw[jk]).copy()
+                if not df.empty and len(df) >= min_rows and "Close" in df.columns:
                     results[_strip_jk(jk)] = df
-            except (KeyError, Exception):
+            except Exception as e:
+                # Delisted / suspended tickers are absent from the frame; expected.
+                logger.debug("no usable data for %s: %s", jk, e)
                 continue
     else:
         # Fallback: flat columns (older yfinance or edge case)
         ticker_clean = _strip_jk(jk_tickers[0])
-        df = raw.dropna(how="all").copy()
-        if not df.empty and len(df) >= 20 and "Close" in df.columns:
+        df = drop_incomplete_bars(raw).copy()
+        if not df.empty and len(df) >= min_rows and "Close" in df.columns:
             results[ticker_clean] = df
 
     return results
@@ -560,7 +565,7 @@ def _run_full_scan(
 # MCP Tool functions
 # ══════════════════════════════════════════════════════════════════════════════
 
-async def scan_today(tick_threshold: float = DEFAULT_TICK_THRESH,
+async def scan_ma_breakout(tick_threshold: float = DEFAULT_TICK_THRESH,
                      vol_threshold:  float = DEFAULT_VOL_THRESH) -> dict:
     """Run full BEI MA Ketat scan for today.
 
@@ -575,7 +580,7 @@ async def scan_today(tick_threshold: float = DEFAULT_TICK_THRESH,
     vol_threshold  = float(vol_threshold)  if vol_threshold  else DEFAULT_VOL_THRESH
 
     cache_key = f"scan_{tick_threshold}_{vol_threshold}"
-    cached = cache.get("scan_today", cache_key)
+    cached = cache.get("scan_ma_breakout", cache_key)
     if cached is not None:
         return cached
 
@@ -602,17 +607,17 @@ async def scan_today(tick_threshold: float = DEFAULT_TICK_THRESH,
             "suggestion": "Try again later.",
         }
 
-    cache.set("scan_today", cache_key, result, _TTL_SCAN)
+    cache.set("scan_ma_breakout", cache_key, result, _TTL_SCAN)
     return result
 
 
 async def get_top10() -> dict:
     """Return the Top 10 MA Ketat results from today's scan.
 
-    Uses cached scan if available; runs a fresh scan if not.
-    Returns lightweight JSON optimised for LLM consumption.
+    Uses cached scan_ma_breakout if available; runs a fresh scan if not.
+    Lightweight format optimised for LLM consumption.
     """
-    full = await scan_today()
+    full = await scan_ma_breakout()
     if full.get("error"):
         return full
 

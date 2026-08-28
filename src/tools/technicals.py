@@ -15,6 +15,7 @@ import yfinance as yf
 
 from ..utils.cache import TTLCache, cache
 from ..utils.formatting import safe_round
+from ..utils.ohlcv import drop_incomplete_bars
 from ..utils.ticker import to_yfinance_ticker, validate_ticker
 from ..utils.time_utils import format_wib_iso
 
@@ -170,7 +171,7 @@ def _fetch_and_compute(yf_ticker: str, fetch_period: str,
     Pure pandas/numpy — no numba, no JIT, typically completes in < 1 s.
     """
     stock = yf.Ticker(yf_ticker)
-    hist  = stock.history(period=fetch_period)
+    hist  = drop_incomplete_bars(stock.history(period=fetch_period))
 
     if hist.empty or len(hist) < 20:
         return {
