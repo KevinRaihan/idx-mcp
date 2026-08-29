@@ -25,7 +25,13 @@ import pandas as pd
 
 from ..utils.cache import cache
 from ..utils.formatting import safe_round
-from ._scan_common import build_envelope, elapsed_since, log_ticker_failure, scan_timer
+from ._scan_common import (
+    Funnel,
+    build_envelope,
+    elapsed_since,
+    log_ticker_failure,
+    scan_timer,
+)
 from .mean_reversion import _compute_rsi
 from .scanner import _f
 from .universe import load_universe, universe_size
@@ -61,6 +67,18 @@ def _enrich_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+FUNNEL_STAGES = (
+    "enough_history",
+    "passed_volume_floor",
+    "uptrend_confirmed",
+    "pulled_back_below_sma20",
+    "held_above_sma50",
+    "pullback_depth_ok",
+    "rsi_in_band",
+    "structure_intact",
+)
+
+
 def _build_signal(
     ticker_clean: str,
     df: pd.DataFrame,
@@ -68,9 +86,12 @@ def _build_signal(
     rsi_min: float,
     rsi_max: float,
     max_pullback: float,
+    funnel: Funnel | None = None,
 ) -> dict | None:
     if df is None or len(df) < MIN_ROWS:
         return None
+    if funnel:
+        funnel.passed("enough_history")
 
     row = df.iloc[-1]
     close = _f(row.get("Close"))
@@ -84,30 +105,44 @@ def _build_signal(
         return None
     if vol < min_vol or high_60d <= 0 or sma200 <= 0:
         return None
+    if funnel:
+        funnel.passed("passed_volume_floor")
 
     # 1. The trend must already exist.
     if not (close > sma200 and sma50 > sma200):
         return None
+    if funnel:
+        funnel.passed("uptrend_confirmed")
 
     # 2. Price has actually pulled back, but has not broken the medium MA.
     if close > sma20:
         return None
+    if funnel:
+        funnel.passed("pulled_back_below_sma20")
     if close < sma50 * SMA50_BREAK_TOLERANCE:
         return None
+    if funnel:
+        funnel.passed("held_above_sma50")
 
     # 3. Depth of the pullback from the recent swing high.
     pullback_pct = (high_60d - close) / high_60d * 100.0
     if not (MIN_PULLBACK_PCT <= pullback_pct <= max_pullback):
         return None
+    if funnel:
+        funnel.passed("pullback_depth_ok")
 
     # 4. Momentum cooled without collapsing.
     if not (rsi_min <= rsi <= rsi_max):
         return None
+    if funnel:
+        funnel.passed("rsi_in_band")
 
     # 5. Structure intact: the recent low has held above the older swing low.
     structure_intact = low_20d > low_60d
     if not structure_intact:
         return None
+    if funnel:
+        funnel.passed("structure_intact")
 
     above_sma200_pct = (close - sma200) / sma200 * 100.0
     vol_avg = _f(row.get("vol_20d_avg"))
@@ -146,12 +181,13 @@ def _run_full_scan(
 ) -> dict:
     started = scan_timer()
     all_data = load_universe(period=SCAN_PERIOD)
+    funnel = Funnel(*FUNNEL_STAGES)
 
     signals = []
     for ticker_clean, df in all_data.items():
         try:
             signal = _build_signal(
-                ticker_clean, _enrich_df(df), min_vol, rsi_min, rsi_max, max_pullback
+                ticker_clean, _enrich_df(df), min_vol, rsi_min, rsi_max, max_pullback, funnel
             )
             if signal:
                 signals.append(signal)
@@ -175,6 +211,7 @@ def _run_full_scan(
                  "max_pullback_pct": max_pullback, "min_pullback_pct": MIN_PULLBACK_PCT},
         elapsed_s=elapsed_since(started),
         top_n=top_n,
+        funnel=funnel,
     )
 
 

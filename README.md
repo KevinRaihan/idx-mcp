@@ -2,7 +2,7 @@
 
 A local MCP (Model Context Protocol) server that provides Indonesian Stock Exchange (IDX) data to Claude Code and Claude Desktop. Exposes **26 tools** returning structured JSON for stock prices, financials, technicals, broker flow, market-wide strategy scans, and trade-thesis evaluation.
 
-**Version 1.2.0** — unified 2-step workflow plus a ten-strategy scanner ensemble over one shared universe fetch.
+**Version 1.3.0** — unified 2-step workflow plus a ten-strategy scanner ensemble over one shared universe fetch, with per-stage filter diagnostics on every scan.
 
 ## Architecture
 
@@ -80,11 +80,28 @@ loader is lock-guarded: several scans entering a cold cache concurrently still
 produce a single fetch. An empty fetch is never cached, so an upstream outage
 lasts as long as the outage rather than four hours.
 
+## Complete results, not just the top 10
+
+Every scan returns three views of the same ranked list:
+
+| Key | Contents |
+|---|---|
+| `top_10` | Full detail, best N only |
+| `all_signals` | Full detail, **every** signal — length always equals `signals_found` |
+| `signals` | Deprecated alias of `top_10`; kept for the existing skill templates |
+
+This matters for the risk scan. `scan_distribution_warning` routinely flags 45+
+tickers, and the question you actually ask it is "is the name I am about to buy
+on this list?" — which `top_10` cannot answer for anything ranked 11th or worse.
+Use `all_signals` for membership tests and vetoes.
+
 ## Reading an empty scan
 
 Zero signals is ambiguous — a quiet market and a broken filter look identical
 from outside, which is how `scan_volume_accumulation` once stayed silently dead.
-`scan_breakout_high` returns a `filter_funnel` of per-stage survivor counts:
+All ten scans return a `filter_funnel` of per-stage survivor counts (under
+`meta` for the two legacy scanners, top level for the rest). Counts are
+monotonically non-increasing and the last stage always equals `signals_found`.
 
 ```json
 "filter_funnel": {
@@ -97,7 +114,26 @@ from outside, which is how `scan_volume_accumulation` once stayed silently dead.
 ```
 
 Six stocks at 60-day highs is a market with no breakouts, not a scan with bad
-defaults.
+defaults. Read the funnel before loosening a filter: the stage that collapses
+tells you whether the market is quiet or your threshold is wrong. On a live run
+`scan_mean_reversion` drops 134 -> 1 at `rsi_below_threshold`, so its emptiness
+is the RSI floor meeting a market with nothing capitulating.
+
+## Partial quotes
+
+Yahoo serves prices from the chart endpoint and metadata from a separate quote
+endpoint that is authenticated and rate-limited on its own. When the latter
+refuses, `get_stock_price` still returns a real price while the 52-week range,
+market cap and previous close come back null. It now says so rather than
+leaving nulls beside a healthy-looking price:
+
+```json
+{ "price": 6475.0, "partial": true,
+  "missing_fields": ["week_52_high", "week_52_low", "market_cap_trillion_idr"],
+  "partial_reason": "Yahoo's quote endpoint was unavailable ..." }
+```
+
+When the quote is complete, `partial` is `false` and `missing_fields` is absent.
 
 ## Installation
 

@@ -12,7 +12,13 @@ import pandas as pd
 
 from ..utils.cache import cache
 from ..utils.formatting import safe_round
-from ._scan_common import build_envelope, elapsed_since, log_ticker_failure, scan_timer
+from ._scan_common import (
+    Funnel,
+    build_envelope,
+    elapsed_since,
+    log_ticker_failure,
+    scan_timer,
+)
 from .scanner import _f, _load_tickers, _to_jk
 from .universe import load_universe
 
@@ -59,8 +65,20 @@ def _enrich_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+FUNNEL_STAGES = (
+    "enough_history",
+    "passed_volume_floor",
+    "rsi_below_threshold",
+    "far_enough_below_sma20",
+)
+
+
 def _passes_entry_filters(
-    row: pd.Series, rsi_thresh: float, min_vol: int, min_below_pct: float
+    row: pd.Series,
+    rsi_thresh: float,
+    min_vol: int,
+    min_below_pct: float,
+    funnel: Funnel | None = None,
 ) -> bool:
     close = _f(row.get("Close"))
     sma20 = _f(row.get("SMA20"))
@@ -72,11 +90,24 @@ def _passes_entry_filters(
     if close <= 0 or sma20 <= 0:
         return False
 
-    return (
-        rsi < rsi_thresh
-        and close < sma20 * (1.0 - min_below_pct / 100.0)
-        and vol >= min_vol
-    )
+    # Checked one stage at a time rather than as a single boolean expression so
+    # the funnel can report which condition actually rejected the ticker.
+    if vol < min_vol:
+        return False
+    if funnel:
+        funnel.passed("passed_volume_floor")
+
+    if rsi >= rsi_thresh:
+        return False
+    if funnel:
+        funnel.passed("rsi_below_threshold")
+
+    if close >= sma20 * (1.0 - min_below_pct / 100.0):
+        return False
+    if funnel:
+        funnel.passed("far_enough_below_sma20")
+
+    return True
 
 
 def _build_signal(
@@ -85,11 +116,14 @@ def _build_signal(
     rsi_thresh: float,
     min_vol: int,
     min_below_pct: float,
+    funnel: Funnel | None = None,
 ) -> dict | None:
     if df is None or len(df) < MIN_ROWS:
         return None
+    if funnel:
+        funnel.passed("enough_history")
     row = df.iloc[-1]
-    if not _passes_entry_filters(row, rsi_thresh, min_vol, min_below_pct):
+    if not _passes_entry_filters(row, rsi_thresh, min_vol, min_below_pct, funnel):
         return None
 
     close = _f(row.get("Close"))
@@ -130,12 +164,13 @@ def _run_full_scan(
 
     # One shared universe fetch backs every scanner; see tools/universe.py.
     all_data = load_universe(period=SCAN_PERIOD)
+    funnel = Funnel(*FUNNEL_STAGES)
 
     signals = []
     for ticker_clean, df in all_data.items():
         try:
             signal = _build_signal(
-                ticker_clean, _enrich_df(df), rsi_thresh, min_vol, min_below_pct
+                ticker_clean, _enrich_df(df), rsi_thresh, min_vol, min_below_pct, funnel
             )
             if signal:
                 signals.append(signal)
@@ -161,6 +196,7 @@ def _run_full_scan(
         },
         elapsed_s=elapsed_since(started),
         top_n=top_n,
+        funnel=funnel,
     )
 
 

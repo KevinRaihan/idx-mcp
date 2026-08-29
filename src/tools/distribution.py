@@ -28,7 +28,13 @@ import pandas as pd
 
 from ..utils.cache import cache
 from ..utils.formatting import safe_round
-from ._scan_common import build_envelope, elapsed_since, log_ticker_failure, scan_timer
+from ._scan_common import (
+    Funnel,
+    build_envelope,
+    elapsed_since,
+    log_ticker_failure,
+    scan_timer,
+)
 from .scanner import _f
 from .universe import load_universe, universe_size
 
@@ -67,11 +73,25 @@ def _enrich_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+FUNNEL_STAGES = (
+    "enough_history",
+    "passed_volume_floor",
+    "raised_any_warning",
+    "scored_above_threshold",
+)
+
+
 def _build_signal(
-    ticker_clean: str, df: pd.DataFrame, min_vol: int, min_score: float
+    ticker_clean: str,
+    df: pd.DataFrame,
+    min_vol: int,
+    min_score: float,
+    funnel: Funnel | None = None,
 ) -> dict | None:
     if df is None or len(df) < MIN_ROWS:
         return None
+    if funnel:
+        funnel.passed("enough_history")
 
     row, prev = df.iloc[-1], df.iloc[-2]
     close = _f(row.get("Close"))
@@ -88,6 +108,8 @@ def _build_signal(
         return None
     if vol < min_vol:
         return None
+    if funnel:
+        funnel.passed("passed_volume_floor")
 
     warnings: list[str] = []
     score = 0.0
@@ -119,8 +141,18 @@ def _build_signal(
         score += 15
         warnings.append("heavy_volume_down_day")
 
+    # A row in a warnings list carrying no warnings says nothing. Without this
+    # gate, min_warning_score=0 emits every liquid stock in the universe with an
+    # empty `warnings` array, which reads as "flagged" to anything consuming it.
+    if not warnings:
+        return None
+    if funnel:
+        funnel.passed("raised_any_warning")
+
     if score < min_score:
         return None
+    if funnel:
+        funnel.passed("scored_above_threshold")
 
     drawdown_pct = (high_60d - close) / high_60d * 100.0
 
@@ -148,11 +180,12 @@ def _build_signal(
 def _run_full_scan(min_vol: int, min_score: float, top_n: int = 10) -> dict:
     started = scan_timer()
     all_data = load_universe(period=SCAN_PERIOD)
+    funnel = Funnel(*FUNNEL_STAGES)
 
     signals = []
     for ticker_clean, df in all_data.items():
         try:
-            signal = _build_signal(ticker_clean, _enrich_df(df), min_vol, min_score)
+            signal = _build_signal(ticker_clean, _enrich_df(df), min_vol, min_score, funnel)
             if signal:
                 signals.append(signal)
         except Exception as e:
@@ -174,6 +207,7 @@ def _run_full_scan(min_vol: int, min_score: float, top_n: int = 10) -> dict:
         filters={"min_volume": min_vol, "min_warning_score": min_score},
         elapsed_s=elapsed_since(started),
         top_n=top_n,
+        funnel=funnel,
     )
     envelope["interpretation"] = (
         "These are risk warnings, not entries. A high score means the chart is "

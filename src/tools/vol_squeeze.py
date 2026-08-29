@@ -12,7 +12,13 @@ import pandas as pd
 
 from ..utils.cache import cache
 from ..utils.formatting import safe_round
-from ._scan_common import build_envelope, elapsed_since, log_ticker_failure, scan_timer
+from ._scan_common import (
+    Funnel,
+    build_envelope,
+    elapsed_since,
+    log_ticker_failure,
+    scan_timer,
+)
 from .scanner import _f, _load_tickers, _to_jk
 from .universe import load_universe
 
@@ -52,8 +58,20 @@ def _enrich_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+FUNNEL_STAGES = (
+    "enough_history",
+    "passed_volume_floor",
+    "bandwidth_at_6mo_low",
+    "macd_turning_up",
+)
+
+
 def _passes_entry_filters(
-    row: pd.Series, prev_row: pd.Series, min_vol: int, tolerance: float
+    row: pd.Series,
+    prev_row: pd.Series,
+    min_vol: int,
+    tolerance: float,
+    funnel: Funnel | None = None,
 ) -> bool:
     close = _f(row.get("Close"))
     bb_width = _f(row.get("bb_width"))
@@ -69,20 +87,37 @@ def _passes_entry_filters(
     if bb_min <= 0:
         return False
 
-    return (
-        bb_width <= bb_min * tolerance   # bandwidth at 6-month lows
-        and macd_hist > macd_prev        # momentum turning up
-        and vol >= min_vol
-    )
+    if vol < min_vol:
+        return False
+    if funnel:
+        funnel.passed("passed_volume_floor")
+
+    if bb_width > bb_min * tolerance:   # bandwidth at 6-month lows
+        return False
+    if funnel:
+        funnel.passed("bandwidth_at_6mo_low")
+
+    if macd_hist <= macd_prev:          # momentum turning up
+        return False
+    if funnel:
+        funnel.passed("macd_turning_up")
+
+    return True
 
 
 def _build_signal(
-    ticker_clean: str, df: pd.DataFrame, min_vol: int, tolerance: float
+    ticker_clean: str,
+    df: pd.DataFrame,
+    min_vol: int,
+    tolerance: float,
+    funnel: Funnel | None = None,
 ) -> dict | None:
     if df is None or len(df) < MIN_ROWS:
         return None
+    if funnel:
+        funnel.passed("enough_history")
     row, prev_row = df.iloc[-1], df.iloc[-2]
-    if not _passes_entry_filters(row, prev_row, min_vol, tolerance):
+    if not _passes_entry_filters(row, prev_row, min_vol, tolerance, funnel):
         return None
 
     close = _f(row.get("Close"))
@@ -119,11 +154,12 @@ def _run_full_scan(min_vol: int, tolerance: float, top_n: int = 10) -> dict:
 
     # One shared universe fetch backs every scanner; see tools/universe.py.
     all_data = load_universe(period=SCAN_PERIOD)
+    funnel = Funnel(*FUNNEL_STAGES)
 
     signals = []
     for ticker_clean, df in all_data.items():
         try:
-            signal = _build_signal(ticker_clean, _enrich_df(df), min_vol, tolerance)
+            signal = _build_signal(ticker_clean, _enrich_df(df), min_vol, tolerance, funnel)
             if signal:
                 signals.append(signal)
         except Exception as e:
@@ -145,6 +181,7 @@ def _run_full_scan(min_vol: int, tolerance: float, top_n: int = 10) -> dict:
                  "squeeze_lookback_days": SQUEEZE_LOOKBACK},
         elapsed_s=elapsed_since(started),
         top_n=top_n,
+        funnel=funnel,
     )
 
 

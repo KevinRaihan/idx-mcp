@@ -1026,8 +1026,21 @@ scan pays roughly 14s; each one after it returns in under a second.
 means a worse chart. Never present its output as a buy list. Its `warnings` array names
 which symptoms fired (`death_cross`, `lower_high`, `heavy_volume_down_day`, ...).
 
-`scan_breakout_high` returns `filter_funnel` — per-stage survivor counts — so an empty
-result can be read as a market condition rather than a broken filter.
+Every scan returns `filter_funnel` — per-stage survivor counts, monotonically
+non-increasing, ending exactly on `signals_found`. It sits at the top level of the
+envelope, or under `meta` for `scan_ma_breakout` and `scan_golden_cross`. Read it before
+loosening a filter: the stage where the count collapses says whether the market is quiet
+or the threshold is wrong.
+
+Every scan also returns `all_signals`, the complete ranked list. `top_10` is the
+presentation view and `signals` is a deprecated alias of it — neither can tell you whether
+a given ticker is present once it ranks 11th or worse. Use `all_signals` for veto and
+confluence checks, especially against `scan_distribution_warning`.
+
+`get_stock_price` returns `partial: true` plus `missing_fields` when Yahoo's quote
+endpoint is rate-limited; the price is still real but the 52-week range, previous close
+and market cap are absent. Do not report a change percentage or 52-week position from a
+partial quote.
 
 Shared response shape:
 

@@ -22,7 +22,13 @@ import pandas as pd
 
 from ..utils.cache import cache
 from ..utils.formatting import safe_round
-from ._scan_common import build_envelope, elapsed_since, log_ticker_failure, scan_timer
+from ._scan_common import (
+    Funnel,
+    build_envelope,
+    elapsed_since,
+    log_ticker_failure,
+    scan_timer,
+)
 from .scanner import _f
 from .universe import load_universe, universe_size
 
@@ -54,15 +60,18 @@ def _enrich_df(df: pd.DataFrame, lookback: int) -> pd.DataFrame:
     return df
 
 
-def _new_funnel() -> dict[str, int]:
+FUNNEL_STAGES = (
+    "enough_history",
+    "passed_volume_floor",
+    "closed_above_prior_high",
+    "base_tight_enough",
+    "volume_confirmed",
+)
+
+
+def _new_funnel() -> Funnel:
     """Survivor counts per stage, so an empty scan can explain itself."""
-    return {
-        "enough_history": 0,
-        "passed_volume_floor": 0,
-        "closed_above_prior_high": 0,
-        "base_tight_enough": 0,
-        "volume_confirmed": 0,
-    }
+    return Funnel(*FUNNEL_STAGES)
 
 
 def _build_signal(
@@ -71,11 +80,11 @@ def _build_signal(
     min_vol: int,
     vol_multiple: float,
     max_base_range: float,
-    funnel: dict[str, int] | None = None,
+    funnel: Funnel | None = None,
 ) -> dict | None:
     def tally(stage: str) -> None:
         if funnel is not None:
-            funnel[stage] += 1
+            funnel.passed(stage)
 
     if df is None or len(df) < MIN_ROWS:
         return None

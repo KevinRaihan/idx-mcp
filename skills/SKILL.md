@@ -76,10 +76,20 @@ Ensemble scanners (v1.2 — five more strategies over the same universe):
   market is open it reflects the previous session.
   Params: `min_volume` (500k), `min_gap_pct` (2.0), `direction` ("up"/"down"/"both")
 
-Every scan returns `universe_size`, `tickers_with_data`, `signals_found` and a `top_10`
-array sorted by `confidence_score`. **Zero signals is a valid answer** — report it as a
-market condition rather than retrying. If the user wants more candidates, loosen the
-filters explicitly (e.g. `max_spread_pct: 8.0`) and say which ones you relaxed.
+Every scan returns `universe_size`, `tickers_with_data`, `signals_found`, a `top_10`
+array sorted by `confidence_score`, and an `all_signals` array holding EVERY signal.
+
+- Use `top_10` to present candidates.
+- Use `all_signals` to ask "is ticker X in this list?" — `top_10` cannot answer that for
+  anything ranked 11th or worse, and `scan_distribution_warning` routinely flags 45+.
+  `signals` is a deprecated alias of `top_10`; never treat it as the complete set.
+
+**Zero signals is a valid answer** — report it as a market condition rather than retrying.
+Before loosening anything, read `filter_funnel`: per-stage survivor counts, present on
+every scan (under `meta` for scan_ma_breakout and scan_golden_cross). The stage where the
+count collapses tells you whether the market is quiet or your threshold is wrong. Say
+which stage emptied when you report an empty scan, and if you do loosen a filter, say
+which one you relaxed.
 
 ### Step 1b — Trade thesis (only when the user wants a position sized)
 1. `gather_intelligence(ticker)` → setup + catalysts

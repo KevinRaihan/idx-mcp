@@ -176,13 +176,29 @@ def _stoch_momentum_bullish(df: pd.DataFrame, stoch_thresh: float) -> bool:
 
 # ── Entry filter ──────────────────────────────────────────────────────────────
 
+FUNNEL_STAGES = (
+    "enough_history",
+    "passed_volume_floor",
+    "golden_cross_in_effect",
+    "above_sma200",
+    "stochastic_oversold",
+    "stochastic_momentum_bullish",
+    "rsi_below_50",
+)
+
+
 def _passes_entry_filters(
     row:          pd.Series,
     df:           pd.DataFrame,
     stoch_thresh: float = DEFAULT_STOCH_THRESH,
     min_vol:      int   = DEFAULT_MIN_VOLUME,
+    funnel=None,
 ) -> bool:
-    """All gate conditions for the Golden Cross + Stochastic Oversold signal."""
+    """All gate conditions for the Golden Cross + Stochastic Oversold signal.
+
+    Evaluated one stage at a time rather than as a single boolean chain so the
+    funnel can report which condition rejected the ticker.
+    """
     close  = _f(row.get("Close"))
     sma50  = _f(row.get("SMA50"))
     sma200 = _f(row.get("SMA200"))
@@ -194,14 +210,37 @@ def _passes_entry_filters(
     if None in (close, sma50, sma200, stk):
         return False
 
-    return (
-        sma50  > sma200                                # golden cross in effect
-        and close  > sma200                            # price above long-term trend
-        and stk    < stoch_thresh                      # oversold stochastic
-        and _stoch_momentum_bullish(df, stoch_thresh)  # not a falling knife
-        and volume >= min_vol                          # minimum liquidity
-        and (rsi is None or rsi < 50)                 # pullback confirmed
-    )
+    if volume < min_vol:                                  # minimum liquidity
+        return False
+    if funnel:
+        funnel.passed("passed_volume_floor")
+
+    if sma50 <= sma200:                                   # golden cross in effect
+        return False
+    if funnel:
+        funnel.passed("golden_cross_in_effect")
+
+    if close <= sma200:                                   # above long-term trend
+        return False
+    if funnel:
+        funnel.passed("above_sma200")
+
+    if stk >= stoch_thresh:                               # oversold stochastic
+        return False
+    if funnel:
+        funnel.passed("stochastic_oversold")
+
+    if not _stoch_momentum_bullish(df, stoch_thresh):     # not a falling knife
+        return False
+    if funnel:
+        funnel.passed("stochastic_momentum_bullish")
+
+    if rsi is not None and rsi >= 50:                     # pullback confirmed
+        return False
+    if funnel:
+        funnel.passed("rsi_below_50")
+
+    return True
 
 
 # ── Confidence score ──────────────────────────────────────────────────────────
@@ -273,17 +312,20 @@ def _build_gc_signal(
     df:           pd.DataFrame,
     stoch_thresh: float = DEFAULT_STOCH_THRESH,
     min_vol:      int   = DEFAULT_MIN_VOLUME,
+    funnel=None,
 ) -> dict | None:
     """Return a golden-cross signal dict if all entry filters pass, else None."""
     if df is None or len(df) < MIN_ROWS:
         return None
+    if funnel:
+        funnel.passed("enough_history")
 
     row   = df.iloc[-1]
     close = _f(row.get("Close"))
     if close is None:
         return None
 
-    if not _passes_entry_filters(row, df, stoch_thresh, min_vol):
+    if not _passes_entry_filters(row, df, stoch_thresh, min_vol, funnel):
         return None
 
     sma50            = _f(row.get("SMA50"))
@@ -448,13 +490,16 @@ def _run_full_scan(
     # One shared universe fetch backs every scanner; see tools/universe.py.
     all_data = load_universe(period="1y")
 
+    from ._scan_common import Funnel
+    funnel = Funnel(*FUNNEL_STAGES)
+
     total_scanned = len(all_data)
     signals: list[dict] = []
 
     for ticker_clean, df in all_data.items():
         try:
             enriched = _enrich_df(df)
-            signal   = _build_gc_signal(ticker_clean, enriched, stoch_thresh, min_vol)
+            signal   = _build_gc_signal(ticker_clean, enriched, stoch_thresh, min_vol, funnel)
             if signal:
                 signal["prediction"] = _predict_gc(signal, enriched)
                 signals.append(signal)
@@ -483,6 +528,7 @@ def _run_full_scan(
                 "stoch_periods":    {"k": 14, "slowing": 3, "d": 3},
                 "sma_periods":      {"golden_cross": [50, 200]},
             },
+            "filter_funnel":           funnel.to_dict(),
         },
         "top_10":       top,
         "all_signals":  signals,

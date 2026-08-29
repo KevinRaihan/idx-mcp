@@ -368,14 +368,38 @@ def test_breakout_funnel_counts_survivors_at_each_stage():
     bh._build_signal("PASS", passing, 100_000, 1.5, 25.0, funnel)
     bh._build_signal("FAIL", failing, 100_000, 1.5, 25.0, funnel)
 
-    assert funnel["enough_history"] == 2
-    assert funnel["passed_volume_floor"] == 2
+    counts = funnel.to_dict()
+    assert counts["enough_history"] == 2
+    assert counts["passed_volume_floor"] == 2
     # Only the first cleared its base high, and it went on to clear every stage.
-    assert funnel["closed_above_prior_high"] == 1
-    assert funnel["volume_confirmed"] == 1
+    assert counts["closed_above_prior_high"] == 1
+    assert counts["volume_confirmed"] == 1
 
 
 def test_breakout_funnel_is_optional():
     """The funnel is a diagnostic, not a required argument."""
     df = bh._enrich_df(base_then_breakout(), 60)
     assert bh._build_signal("TEST", df, 100_000, 1.5, 25.0) is not None
+
+
+def test_distribution_never_emits_a_row_with_no_warnings():
+    """min_warning_score=0 must not turn a risk scan into a list of every stock."""
+    healthy = _frame(np.linspace(1000, 1600, 280))
+    assert dist._build_signal("TEST", dist._enrich_df(healthy), 100_000, 0.0) is None
+
+
+def test_distribution_funnel_separates_clean_stocks_from_low_scorers():
+    from src.tools._scan_common import Funnel
+
+    funnel = Funnel(*dist.FUNNEL_STAGES)
+    healthy = dist._enrich_df(_frame(np.linspace(1000, 1600, 280)))
+    broken = dist._enrich_df(breakdown_frame())
+
+    dist._build_signal("HEALTHY", healthy, 100_000, 50.0, funnel)
+    dist._build_signal("BROKEN", broken, 100_000, 50.0, funnel)
+
+    counts = funnel.to_dict()
+    assert counts["enough_history"] == 2
+    assert counts["passed_volume_floor"] == 2
+    assert counts["raised_any_warning"] == 1
+    assert counts["scored_above_threshold"] == 1

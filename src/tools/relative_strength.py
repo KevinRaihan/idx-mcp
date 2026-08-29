@@ -23,7 +23,13 @@ import pandas as pd
 
 from ..utils.cache import cache
 from ..utils.formatting import safe_round
-from ._scan_common import build_envelope, elapsed_since, log_ticker_failure, scan_timer
+from ._scan_common import (
+    Funnel,
+    build_envelope,
+    elapsed_since,
+    log_ticker_failure,
+    scan_timer,
+)
 from .scanner import _download_batch, _f
 from .universe import load_universe, universe_size
 
@@ -88,6 +94,15 @@ def _beta(stock_ret: pd.Series, index_ret: pd.Series, window: int = BETA_WINDOW)
     return _f(s.cov(i) / var)
 
 
+FUNNEL_STAGES = (
+    "enough_history",
+    "passed_volume_floor",
+    "benchmark_aligned",
+    "excess_3m_met",
+    "rs_high_met",
+)
+
+
 def _build_signal(
     ticker_clean: str,
     df: pd.DataFrame,
@@ -95,14 +110,19 @@ def _build_signal(
     min_vol: int,
     min_excess_3m: float,
     require_rs_high: bool,
+    funnel: Funnel | None = None,
 ) -> dict | None:
     if df is None or len(df) < MIN_ROWS:
         return None
+    if funnel:
+        funnel.passed("enough_history")
 
     close = df["Close"]
     vol = _f(df["Volume"].iloc[-1]) or 0.0
     if vol < min_vol:
         return None
+    if funnel:
+        funnel.passed("passed_volume_floor")
 
     # Align the index onto the stock's own trading calendar. Forward-filling
     # covers the rare session a stock trades while the index print is missing;
@@ -118,6 +138,8 @@ def _build_signal(
     idx_1m, idx_3m, idx_6m = (_pct_return(idx_close, b) for b in (BARS_1M, BARS_3M, BARS_6M))
     if None in (stock_1m, stock_3m, idx_1m, idx_3m):
         return None
+    if funnel:
+        funnel.passed("benchmark_aligned")
 
     excess_1m = stock_1m - idx_1m
     excess_3m = stock_3m - idx_3m
@@ -125,6 +147,8 @@ def _build_signal(
 
     if excess_3m < min_excess_3m:
         return None
+    if funnel:
+        funnel.passed("excess_3m_met")
 
     rs_line = close / idx_close.replace(0, np.nan)
     rs_now = _f(rs_line.iloc[-1])
@@ -135,6 +159,8 @@ def _build_signal(
 
     if require_rs_high and not rs_at_high:
         return None
+    if funnel:
+        funnel.passed("rs_high_met")
 
     beta = _beta(close.pct_change().dropna(), idx_close.pct_change().dropna())
 
@@ -179,12 +205,13 @@ def _run_full_scan(
         }
 
     all_data = load_universe(period=SCAN_PERIOD)
+    funnel = Funnel(*FUNNEL_STAGES)
 
     signals = []
     for ticker_clean, df in all_data.items():
         try:
             signal = _build_signal(
-                ticker_clean, df, bench, min_vol, min_excess_3m, require_rs_high
+                ticker_clean, df, bench, min_vol, min_excess_3m, require_rs_high, funnel
             )
             if signal:
                 signals.append(signal)
@@ -208,6 +235,7 @@ def _run_full_scan(
                  "require_rs_high": require_rs_high, "benchmark": BENCHMARK},
         elapsed_s=elapsed_since(started),
         top_n=top_n,
+        funnel=funnel,
     )
 
 

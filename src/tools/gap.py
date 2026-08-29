@@ -28,7 +28,13 @@ import pandas as pd
 
 from ..utils.cache import cache
 from ..utils.formatting import safe_round
-from ._scan_common import build_envelope, elapsed_since, log_ticker_failure, scan_timer
+from ._scan_common import (
+    Funnel,
+    build_envelope,
+    elapsed_since,
+    log_ticker_failure,
+    scan_timer,
+)
 from .scanner import _f
 from .universe import load_universe, universe_size
 
@@ -67,11 +73,26 @@ def _enrich_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+FUNNEL_STAGES = (
+    "enough_history",
+    "passed_volume_floor",
+    "gap_size_met",
+    "gap_behaviour_confirmed",
+)
+
+
 def _build_signal(
-    ticker_clean: str, df: pd.DataFrame, min_vol: int, min_gap: float, direction: str
+    ticker_clean: str,
+    df: pd.DataFrame,
+    min_vol: int,
+    min_gap: float,
+    direction: str,
+    funnel: Funnel | None = None,
 ) -> dict | None:
     if df is None or len(df) < MIN_ROWS:
         return None
+    if funnel:
+        funnel.passed("enough_history")
 
     row = df.iloc[-1]
     open_, high, low, close = (_f(row.get(c)) for c in ("Open", "High", "Low", "Close"))
@@ -83,6 +104,8 @@ def _build_signal(
         return None
     if vol < min_vol:
         return None
+    if funnel:
+        funnel.passed("passed_volume_floor")
 
     gap_pct = (open_ - prev_close) / prev_close * 100.0
     vol_ratio = (vol / vol_avg) if vol_avg else 0.0
@@ -95,11 +118,15 @@ def _build_signal(
 
     if gap_pct >= min_gap and direction in ("up", "both"):
         gap_direction = "up"
+        if funnel:
+            funnel.passed("gap_size_met")
         # Unfilled means the session low never traded back to yesterday's close.
         unfilled = low > prev_close
         held = close >= open_
         if close <= prev_close:
             return None  # gave the whole gap back; not a continuation setup
+        if funnel:
+            funnel.passed("gap_behaviour_confirmed")
 
         score += 30 if unfilled else 10
         score += 25 if held else 12
@@ -109,11 +136,15 @@ def _build_signal(
 
     elif gap_pct <= -min_gap and direction in ("down", "both"):
         gap_direction = "down"
+        if funnel:
+            funnel.passed("gap_size_met")
         unfilled = high < prev_close
         # Exhaustion, not breakdown: the session had to close above its open.
         held = close > open_
         if not held:
             return None
+        if funnel:
+            funnel.passed("gap_behaviour_confirmed")
 
         recovery_pct = (close - low) / low * 100.0 if low > 0 else 0.0
         score += 35
@@ -147,11 +178,14 @@ def _build_signal(
 def _run_full_scan(min_vol: int, min_gap: float, direction: str, top_n: int = 10) -> dict:
     started = scan_timer()
     all_data = load_universe(period=SCAN_PERIOD)
+    funnel = Funnel(*FUNNEL_STAGES)
 
     signals = []
     for ticker_clean, df in all_data.items():
         try:
-            signal = _build_signal(ticker_clean, _enrich_df(df), min_vol, min_gap, direction)
+            signal = _build_signal(
+                ticker_clean, _enrich_df(df), min_vol, min_gap, direction, funnel
+            )
             if signal:
                 signals.append(signal)
         except Exception as e:
@@ -173,6 +207,7 @@ def _run_full_scan(min_vol: int, min_gap: float, direction: str, top_n: int = 10
         filters={"min_volume": min_vol, "min_gap_pct": min_gap, "direction": direction},
         elapsed_s=elapsed_since(started),
         top_n=top_n,
+        funnel=funnel,
     )
     envelope["note"] = (
         "Reads the last completed daily bar. While the market is open, the "

@@ -11,6 +11,33 @@ import time
 
 from ..utils.time_utils import format_wib_iso, now_wib
 
+
+class Funnel:
+    """Survivor counts per filter stage.
+
+    Zero signals is an ambiguous result: a quiet market and a broken filter look
+    identical from outside a scan. That ambiguity is exactly how
+    ``scan_volume_accumulation`` stayed silently dead — its MIN_ROWS exceeded the
+    bars its own SCAN_PERIOD fetched, so it could never return anything, and the
+    empty output was indistinguishable from a calm day.
+
+    Stages are declared up front and counted in order, so a stage reading zero
+    while the one above it reads 130 names the filter that emptied the room.
+    """
+
+    __slots__ = ("_counts",)
+
+    def __init__(self, *stages: str):
+        self._counts: dict[str, int] = {s: 0 for s in stages}
+
+    def passed(self, stage: str) -> None:
+        # A typo'd stage name would otherwise vanish into a silent no-op and
+        # report a funnel that quietly disagrees with the code.
+        self._counts[stage] += 1
+
+    def to_dict(self) -> dict[str, int]:
+        return dict(self._counts)
+
 DISCLAIMER = (
     "This output is for educational and analytical purposes only. "
     "Not financial advice. Trading decisions remain the user's full responsibility."
@@ -34,10 +61,14 @@ def build_envelope(
     ``top_10`` is kept as the primary key for backwards compatibility with the
     existing skill templates; ``signals`` is its alias.
 
-    ``funnel`` is an optional per-stage survivor count. Zero signals is an
-    ambiguous result — a quiet market and a broken scan look identical from the
-    outside, which is exactly how ``scan_volume_accumulation`` stayed silently
-    dead. A funnel says which filter emptied the room.
+    ``all_signals`` carries every signal, matching ``signals_found``. Without it
+    a scan reporting 134 flags handed back only 10 rows under a key named
+    ``signals``, so a risk scan could not be used to check whether a specific
+    ticker was flagged — the answer was silently truncated away. The legacy
+    MA Ketat and Golden Cross scanners already returned ``all_signals``; this
+    brings the rest into line with that contract.
+
+    ``funnel`` is an optional per-stage survivor count. See ``Funnel``.
     """
     top = signals[:top_n]
     envelope = {
@@ -50,11 +81,14 @@ def build_envelope(
         "signals_found": len(signals),
         "filters_applied": filters,
         "top_10": top,
+        # Alias of top_10, kept for the existing skill templates. Use
+        # all_signals when you need the complete set — this one is capped.
         "signals": top,
+        "all_signals": signals,
         "disclaimer": DISCLAIMER,
     }
     if funnel is not None:
-        envelope["filter_funnel"] = funnel
+        envelope["filter_funnel"] = funnel.to_dict() if isinstance(funnel, Funnel) else funnel
     return envelope
 
 
