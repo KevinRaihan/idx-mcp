@@ -11,7 +11,13 @@ import pandas as pd
 
 from ..utils.cache import cache
 from ..utils.formatting import safe_round
-from ._scan_common import build_envelope, elapsed_since, log_ticker_failure, scan_timer
+from ._scan_common import (
+    Funnel,
+    build_envelope,
+    elapsed_since,
+    log_ticker_failure,
+    scan_timer,
+)
 from .scanner import _f, _load_tickers, _to_jk
 from .universe import load_universe
 
@@ -39,12 +45,22 @@ def _enrich_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+FUNNEL_STAGES = (
+    "enough_history",
+    "passed_volume_floor",
+    "volume_multiple_met",
+    "spread_tight_enough",
+    "close_held_up",
+)
+
+
 def _passes_entry_filters(
     row: pd.Series,
     prev_close: float | None,
     min_vol: int,
     vol_multiple: float,
     max_spread_pct: float,
+    funnel: Funnel | None = None,
 ) -> bool:
     close = _f(row.get("Close"))
     vol = _f(row.get("Volume"))
@@ -56,12 +72,27 @@ def _passes_entry_filters(
     if vol_avg <= 0 or close <= 0:
         return False
 
-    return (
-        vol >= min_vol
-        and (vol / vol_avg) >= vol_multiple
-        and spread <= max_spread_pct   # tight intraday range
-        and close >= prev_close        # accumulation, not distribution
-    )
+    if vol < min_vol:
+        return False
+    if funnel:
+        funnel.passed("passed_volume_floor")
+
+    if (vol / vol_avg) < vol_multiple:
+        return False
+    if funnel:
+        funnel.passed("volume_multiple_met")
+
+    if spread > max_spread_pct:      # tight intraday range
+        return False
+    if funnel:
+        funnel.passed("spread_tight_enough")
+
+    if close < prev_close:           # accumulation, not distribution
+        return False
+    if funnel:
+        funnel.passed("close_held_up")
+
+    return True
 
 
 def _build_signal(
@@ -70,13 +101,18 @@ def _build_signal(
     min_vol: int,
     vol_multiple: float,
     max_spread_pct: float,
+    funnel: Funnel | None = None,
 ) -> dict | None:
     if df is None or len(df) < MIN_ROWS:
         return None
+    if funnel:
+        funnel.passed("enough_history")
 
     row = df.iloc[-1]
     prev_close = _f(df["Close"].iloc[-2])
-    if not _passes_entry_filters(row, prev_close, min_vol, vol_multiple, max_spread_pct):
+    if not _passes_entry_filters(
+        row, prev_close, min_vol, vol_multiple, max_spread_pct, funnel
+    ):
         return None
 
     close = _f(row.get("Close"))
@@ -113,12 +149,13 @@ def _run_full_scan(
 
     # One shared universe fetch backs every scanner; see tools/universe.py.
     all_data = load_universe(period=SCAN_PERIOD)
+    funnel = Funnel(*FUNNEL_STAGES)
 
     signals = []
     for ticker_clean, df in all_data.items():
         try:
             signal = _build_signal(
-                ticker_clean, _enrich_df(df), min_vol, vol_multiple, max_spread_pct
+                ticker_clean, _enrich_df(df), min_vol, vol_multiple, max_spread_pct, funnel
             )
             if signal:
                 signals.append(signal)
@@ -144,6 +181,7 @@ def _run_full_scan(
         },
         elapsed_s=elapsed_since(started),
         top_n=top_n,
+        funnel=funnel,
     )
 
 

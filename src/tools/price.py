@@ -72,7 +72,9 @@ async def _fetch_price(normalized: str) -> dict:
 
     # Fallback: fast_info (lightweight endpoint, fewer fields)
     # FIX: capture the price here and do NOT re-fetch it below
+    used_fallback = False
     if price is None:
+        used_fallback = True
         try:
             fi = await asyncio.to_thread(lambda: stock.fast_info)
             price = _coerce(getattr(fi, "last_price", None) or getattr(fi, "lastPrice", None))
@@ -88,7 +90,14 @@ async def _fetch_price(normalized: str) -> dict:
                 "suggestion": f"Verify that {normalized} is a valid IDX ticker symbol.",
             }
 
-    # At this point `price` is guaranteed non-None (from either source)
+    # At this point `price` is guaranteed non-None (from either source).
+    #
+    # The quote endpoint that backs `.info` needs an authenticated crumb and is
+    # rate-limited independently of the chart endpoint. When it refuses, `info`
+    # comes back empty, `fast_info` still supplies a price, and every other
+    # field below silently becomes None. Reporting that as an ordinary quote
+    # makes a degraded response indistinguishable from a complete one, so the
+    # payload says which fields are actually missing.
     prev_close  = _coerce(info.get("regularMarketPreviousClose") or info.get("previousClose"))
     open_price  = _coerce(info.get("regularMarketOpen")  or info.get("open"))
     high        = _coerce(info.get("regularMarketDayHigh") or info.get("dayHigh"))
@@ -101,7 +110,10 @@ async def _fetch_price(normalized: str) -> dict:
     volume_idr_billion   = safe_round((volume * price) / 1_000_000_000, 2) if volume else None
     market_cap_trillion  = safe_round(market_cap / 1_000_000_000_000, 2) if market_cap else None
 
-    return {
+    week_52_high = _coerce(info.get("fiftyTwoWeekHigh"))
+    week_52_low = _coerce(info.get("fiftyTwoWeekLow"))
+
+    payload = {
         "ticker": normalized,
         "name": info.get("longName") or info.get("shortName") or normalized,
         "price": price,
@@ -114,13 +126,28 @@ async def _fetch_price(normalized: str) -> dict:
         "volume": int(volume) if volume else 0,
         "volume_idr_billion": volume_idr_billion,
         "prev_close": prev_close,
-        "week_52_high": _coerce(info.get("fiftyTwoWeekHigh")),
-        "week_52_low":  _coerce(info.get("fiftyTwoWeekLow")),
+        "week_52_high": week_52_high,
+        "week_52_low":  week_52_low,
         "market_cap_trillion_idr": market_cap_trillion,
         "market_status": get_market_status(),
         "last_updated": format_wib_iso(),
-        "source": "yfinance",
+        # A 401 from the quote endpoint still returns a dict, just without the
+        # quote fields, so the presence of `info` says nothing about whether the
+        # price itself came from the fallback.
+        "source": "yfinance:fast_info" if used_fallback else "yfinance",
     }
+
+    missing = [k for k in ("prev_close", "open", "high", "low",
+                           "week_52_high", "week_52_low", "market_cap_trillion_idr")
+               if payload[k] is None]
+    payload["partial"] = bool(missing)
+    if missing:
+        payload["missing_fields"] = missing
+        payload["partial_reason"] = (
+            "Yahoo's quote endpoint was unavailable (auth or rate limit); price came "
+            "from the lightweight fallback. Treat only `price` as reliable here."
+        )
+    return payload
 
 
 def _coerce(val) -> float | None:

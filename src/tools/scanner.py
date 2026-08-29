@@ -203,23 +203,54 @@ def _is_above_all_ma(row: pd.Series) -> bool:
     return True
 
 
+FUNNEL_STAGES = (
+    "enough_history",
+    "passed_volume_floor",
+    "moving_averages_tight",
+    "above_all_moving_averages",
+    "above_ma100",
+)
+
+
 def _passes_entry_filters(row: pd.Series,
                            tick_thresh: float = DEFAULT_TICK_THRESH,
                            vol_thresh:  float = DEFAULT_VOL_THRESH,
-                           min_vol:     int   = DEFAULT_MIN_VOLUME) -> bool:
-    """All gate conditions (SRS §5.1)."""
+                           min_vol:     int   = DEFAULT_MIN_VOLUME,
+                           funnel=None) -> bool:
+    """All gate conditions (SRS §5.1).
+
+    Evaluated one stage at a time rather than as a single boolean chain so the
+    funnel can report which condition rejected the ticker.
+    """
     close   = _f(row.get("Close"))
     ma100   = _f(row.get("MA_100"))
     _vol    = _f(row.get("Volume"))
     volume  = _vol if _vol is not None else 0.0
-    return (
-        close  is not None
-        and ma100 is not None
-        and _is_ma_tight(row, tick_thresh, vol_thresh)
-        and _is_above_all_ma(row)
-        and volume >= min_vol
-        and close >= ma100
-    )
+
+    if close is None or ma100 is None:
+        return False
+
+    if volume < min_vol:
+        return False
+    if funnel:
+        funnel.passed("passed_volume_floor")
+
+    if not _is_ma_tight(row, tick_thresh, vol_thresh):
+        return False
+    if funnel:
+        funnel.passed("moving_averages_tight")
+
+    if not _is_above_all_ma(row):
+        return False
+    if funnel:
+        funnel.passed("above_all_moving_averages")
+
+    if close < ma100:
+        return False
+    if funnel:
+        funnel.passed("above_ma100")
+
+    return True
 
 
 # ── Confidence score (SRS §5.3) ───────────────────────────────────────────────
@@ -285,20 +316,23 @@ def _enrich_df(df: pd.DataFrame) -> pd.DataFrame:
 
 def _build_signal(ticker_clean: str, df: pd.DataFrame,
                   tick_thresh: float = DEFAULT_TICK_THRESH,
-                  vol_thresh:  float = DEFAULT_VOL_THRESH) -> dict | None:
+                  vol_thresh:  float = DEFAULT_VOL_THRESH,
+                  funnel=None) -> dict | None:
     """Analyse the latest row of an enriched DataFrame.
 
     Returns a signal dict if all entry filters pass, else None.
     """
     if df is None or len(df) < 110:
         return None   # need 100 rows for MA_100 plus warm-up
+    if funnel:
+        funnel.passed("enough_history")
 
     row   = df.iloc[-1]
     close = _f(row.get("Close"))
     if close is None:
         return None
 
-    if not _passes_entry_filters(row, tick_thresh, vol_thresh):
+    if not _passes_entry_filters(row, tick_thresh, vol_thresh, funnel=funnel):
         return None
 
     tick    = get_tick_size(close)
@@ -514,13 +548,16 @@ def _run_full_scan(
     # One shared universe fetch backs every scanner; see tools/universe.py.
     all_data = load_universe(period="1y")
 
+    from ._scan_common import Funnel
+    funnel = Funnel(*FUNNEL_STAGES)
+
     total_scanned = len(all_data)
     signals: list[dict] = []
 
     for ticker_clean, df in all_data.items():
         try:
             enriched = _enrich_df(df)
-            signal   = _build_signal(ticker_clean, enriched, tick_thresh, vol_thresh)
+            signal   = _build_signal(ticker_clean, enriched, tick_thresh, vol_thresh, funnel)
             if signal:
                 pred = _predict(signal, enriched)
                 signal["prediction"] = pred
@@ -549,6 +586,7 @@ def _run_full_scan(
                 "min_volume":     DEFAULT_MIN_VOLUME,
                 "ma_periods":     MA_PERIODS,
             },
+            "filter_funnel":          funnel.to_dict(),
         },
         "top_10":       top10,
         "all_signals":  signals,

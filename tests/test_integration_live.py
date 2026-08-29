@@ -65,8 +65,27 @@ async def test_live_price_is_plausible():
     assert not r.get("error"), r
     assert r["ticker"] == "BBCA"
     assert r["price"] > 0
-    assert r["week_52_low"] <= r["price"] <= r["week_52_high"]
     assert r["market_status"] in {"open", "closed", "lunch_break", "pre_open"}
+
+    # Yahoo's quote endpoint is separately rate-limited from the chart endpoint,
+    # so the 52-week range can legitimately be absent. That must be declared
+    # rather than left as a silent null next to a healthy-looking price.
+    if r["partial"]:
+        assert r["missing_fields"]
+        assert all(r[k] is None for k in r["missing_fields"])
+        assert r["partial_reason"]
+    else:
+        assert r["week_52_low"] <= r["price"] <= r["week_52_high"]
+
+
+async def test_live_price_declares_whether_the_quote_was_complete():
+    r = await get_stock_price("BBRI")
+    assert not r.get("error"), r
+    assert isinstance(r["partial"], bool)
+    # `partial` and `missing_fields` must agree with each other.
+    assert r["partial"] == ("missing_fields" in r)
+    if r["partial"]:
+        assert all(r[k] is None for k in r["missing_fields"])
 
 
 async def test_live_technicals_are_internally_consistent():
@@ -239,7 +258,7 @@ def test_server_completes_a_real_stdio_session():
     ])
 
     assert init["result"]["serverInfo"]["name"] == "idx-mcp"
-    assert init["result"]["serverInfo"]["version"] == "1.2.0"
+    assert init["result"]["serverInfo"]["version"] == "1.3.0"
 
     listed = tools["result"]["tools"]
     assert len(listed) == 26
@@ -415,3 +434,76 @@ async def test_all_ten_live_scans_share_one_universe_download(monkeypatch):
         f"one pass over the universe is {batches}"
     )
     assert sum(calls) == universe
+
+
+# ── all_signals and the filter funnel, across every scan ──────────────────────
+
+ENVELOPE_SCANS = [
+    scan_mean_reversion, scan_volatility_squeeze, scan_volume_accumulation,
+    scan_relative_strength, scan_trend_pullback, scan_breakout_high,
+    scan_distribution_warning, scan_gap,
+]
+
+
+def _funnel_of(result):
+    """Envelope scans expose the funnel at the top level; legacy ones under meta."""
+    return result.get("filter_funnel") or result.get("meta", {}).get("filter_funnel")
+
+
+@pytest.mark.parametrize("scan", ENVELOPE_SCANS)
+async def test_live_all_signals_is_not_truncated(scan):
+    """The bug: signals_found reported 134 while the payload carried 10 rows."""
+    r = await scan()
+    assert not r.get("error"), r
+
+    assert len(r["all_signals"]) == r["signals_found"]
+    assert len(r["top_10"]) == min(10, r["signals_found"])
+    # top_10 must be the head of all_signals, not a differently-sorted subset.
+    assert [s["ticker"] for s in r["top_10"]] == \
+           [s["ticker"] for s in r["all_signals"][:len(r["top_10"])]]
+
+
+@pytest.mark.parametrize("scan", ENVELOPE_SCANS)
+async def test_live_funnel_is_monotonic_and_lands_on_signals_found(scan):
+    r = await scan()
+    assert not r.get("error"), r
+
+    funnel = _funnel_of(r)
+    assert funnel, f"{scan.__name__} returned no filter_funnel"
+
+    counts = list(funnel.values())
+    for stage, (a, b) in zip(list(funnel)[1:], zip(counts, counts[1:])):
+        assert b <= a, f"{scan.__name__}: stage {stage} ({b}) exceeds the one above it ({a})"
+
+    # The last stage is the final gate, so its survivors are exactly the signals.
+    assert counts[-1] == r["signals_found"], (
+        f"{scan.__name__}: funnel ends at {counts[-1]} but reports "
+        f"{r['signals_found']} signals"
+    )
+    assert counts[0] <= r["tickers_with_data"]
+
+
+async def test_live_legacy_scans_also_report_a_funnel():
+    from src.tools.golden_cross import scan_golden_cross as _gc
+    from src.tools.scanner import scan_ma_breakout as _ma
+
+    for scan in (_ma, _gc):
+        r = await scan()
+        funnel = _funnel_of(r)
+        assert funnel, f"{scan.__name__} returned no filter_funnel"
+        counts = list(funnel.values())
+        assert counts == sorted(counts, reverse=True)
+        assert counts[-1] == r["meta"]["total_signals_found"]
+
+
+async def test_live_distribution_all_signals_answers_the_veto_question():
+    """The real use: is a candidate flagged, even outside the top 10?"""
+    r = await scan_distribution_warning(min_warning_score=0.0)
+    assert not r.get("error"), r
+    assert r["signals_found"] > 10, "expected a broad flag list to test truncation against"
+
+    flagged = {s["ticker"] for s in r["all_signals"]}
+    top = {s["ticker"] for s in r["top_10"]}
+    assert top < flagged, "all_signals adds nothing beyond top_10"
+    for sig in r["all_signals"]:
+        assert sig["warnings"]

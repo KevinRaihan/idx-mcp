@@ -11,7 +11,7 @@ import pytest
 from src.tools import mean_reversion as mr
 from src.tools import vol_squeeze as vs
 from src.tools import volume_accumulation as va
-from src.tools._scan_common import build_envelope
+from src.tools._scan_common import Funnel, build_envelope
 
 
 def frame(closes, volumes=None, spread_pct=1.0, highs=None, lows=None):
@@ -233,3 +233,115 @@ async def test_scan_results_are_cached(monkeypatch):
 
     await mr.scan_mean_reversion(rsi_threshold=20.0)
     assert len(calls) == 2
+
+
+# ── all_signals and the funnel ────────────────────────────────────────────────
+
+def test_all_signals_is_complete_while_top_10_is_capped():
+    """The truncation bug: signals_found said 134, the payload carried 10 rows."""
+    signals = [{"ticker": f"T{i}", "confidence_score": i} for i in range(134)]
+    env = build_envelope(
+        strategy="demo", signals=signals, total_scanned=178, downloaded=169,
+        failed=9, filters={}, elapsed_s=1.0, top_n=10,
+    )
+    assert env["signals_found"] == 134
+    assert len(env["top_10"]) == 10
+    assert len(env["all_signals"]) == 134
+    assert len(env["all_signals"]) == env["signals_found"]
+
+
+def test_all_signals_lets_a_ticker_outside_the_top_10_be_found():
+    """The veto use case: is ticker X flagged, even at rank 90?"""
+    signals = [{"ticker": f"T{i}", "confidence_score": 100 - i} for i in range(100)]
+    env = build_envelope(
+        strategy="demo", signals=signals, total_scanned=178, downloaded=178,
+        failed=0, filters={}, elapsed_s=1.0, top_n=10,
+    )
+    flagged = {s["ticker"] for s in env["all_signals"]}
+    assert "T90" in flagged
+    assert "T90" not in {s["ticker"] for s in env["top_10"]}
+
+
+def test_envelope_omits_the_funnel_when_none_is_supplied():
+    env = build_envelope(
+        strategy="demo", signals=[], total_scanned=1, downloaded=1,
+        failed=0, filters={}, elapsed_s=1.0,
+    )
+    assert "filter_funnel" not in env
+
+
+def test_envelope_serialises_a_funnel_object():
+    funnel = Funnel("a", "b")
+    funnel.passed("a")
+    env = build_envelope(
+        strategy="demo", signals=[], total_scanned=1, downloaded=1,
+        failed=0, filters={}, elapsed_s=1.0, funnel=funnel,
+    )
+    assert env["filter_funnel"] == {"a": 1, "b": 0}
+
+
+def test_funnel_counts_and_starts_at_zero():
+    f = Funnel("one", "two")
+    assert f.to_dict() == {"one": 0, "two": 0}
+    f.passed("one")
+    f.passed("one")
+    f.passed("two")
+    assert f.to_dict() == {"one": 2, "two": 1}
+
+
+def test_funnel_rejects_an_undeclared_stage():
+    """A typo'd stage would otherwise report a funnel that disagrees with the code."""
+    f = Funnel("declared")
+    with pytest.raises(KeyError):
+        f.passed("typo")
+
+
+def test_funnel_dict_is_a_copy():
+    f = Funnel("a")
+    out = f.to_dict()
+    out["a"] = 999
+    assert f.to_dict() == {"a": 0}
+
+
+# ── degraded quote reporting ──────────────────────────────────────────────────
+
+async def test_price_flags_a_partial_quote_when_the_info_endpoint_is_refused(monkeypatch):
+    """Yahoo's quote endpoint is rate-limited apart from the chart endpoint."""
+    import src.tools.price as price_mod
+
+    class _FastInfo:
+        last_price = 6475.0
+
+    class _Stock:
+        info = {}                      # what an unauthorized quote call returns
+        fast_info = _FastInfo()
+
+    monkeypatch.setattr(price_mod.yf, "Ticker", lambda t: _Stock())
+    r = await price_mod.get_stock_price("BBCA")
+
+    assert r["price"] == 6475.0
+    assert r["partial"] is True
+    assert r["source"] == "yfinance:fast_info"
+    assert "week_52_low" in r["missing_fields"]
+    assert r["partial_reason"]
+
+
+async def test_price_reports_a_complete_quote_as_not_partial(monkeypatch):
+    import src.tools.price as price_mod
+
+    class _Stock:
+        info = {
+            "regularMarketPrice": 6475.0, "regularMarketPreviousClose": 6400.0,
+            "regularMarketOpen": 6410.0, "regularMarketDayHigh": 6500.0,
+            "regularMarketDayLow": 6390.0, "regularMarketVolume": 1_000_000,
+            "marketCap": 800_000_000_000_000, "fiftyTwoWeekHigh": 7000.0,
+            "fiftyTwoWeekLow": 5500.0, "longName": "Bank Central Asia",
+        }
+
+    monkeypatch.setattr(price_mod.yf, "Ticker", lambda t: _Stock())
+    r = await price_mod.get_stock_price("BBCA")
+
+    assert r["partial"] is False
+    assert "missing_fields" not in r
+    assert r["source"] == "yfinance"
+    assert r["week_52_low"] <= r["price"] <= r["week_52_high"]

@@ -593,9 +593,9 @@ Filters: [filters_applied, inline]
 
 Severity is a risk ranking, not a trade ranking — 100 is the most damaged chart.
 
-Overlap with long signals: [list any ticker appearing in both this scan and a
-long scan run in the same session, and treat that as a veto rather than a
-confluence]
+Overlap with long signals: [check candidates against `all_signals`, NOT `top_10` —
+this scan routinely flags 45+ tickers and a veto ranked 30th is still a veto.
+Treat any overlap as a veto rather than a confluence]
 
 [DISCLAIMER]
 ```
