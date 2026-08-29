@@ -267,6 +267,8 @@ IDX-MCP:   get_stock_price | get_financials | get_technicals | get_broker_summar
            [MA Ketat] scan_ma_breakout | get_top10 | analyze_ticker | get_prediction | run_backtest | get_scan_summary
            [GoldenX] scan_golden_cross | get_top_golden_cross | analyze_golden_cross
            [Ensemble] scan_mean_reversion | scan_volatility_squeeze | scan_volume_accumulation
+           [Ensemble] scan_relative_strength | scan_trend_pullback | scan_breakout_high | scan_gap
+           [Risk] scan_distribution_warning
            [Thesis] gather_intelligence | evaluate_and_log_thesis
            Retrieved: [HH:MM WIB, DD-MMM-YYYY]
 Financials: [Reporting period, e.g., FY2024 annual / Q3-2024 quarterly]
@@ -505,7 +507,11 @@ Next step: Run analyze_golden_cross on top 3 for full assessment + entry paramet
 
 ## Template 18 — Ensemble Strategy Scan
 
-*(Output from `scan_mean_reversion` / `scan_volatility_squeeze` / `scan_volume_accumulation`)*
+*(Output from any of the nine long-side market scans: `scan_mean_reversion`,
+`scan_volatility_squeeze`, `scan_volume_accumulation`, `scan_relative_strength`,
+`scan_trend_pullback`, `scan_breakout_high`, `scan_gap`, `scan_ma_breakout`,
+`scan_golden_cross`. For `scan_distribution_warning` use Template 20 instead —
+its score means the opposite.)*
 
 ```
 🔎 [STRATEGY] SCAN — [DD-MMM-YYYY HH:MM WIB]
@@ -564,3 +570,67 @@ Logged: [logging_status.log_file]
 
 Report `negative_edge` as a no-trade with the numbers intact — never re-run with
 an inflated `win_prob` to reach a positive EV.
+
+---
+
+## Template 20 — Distribution Warning (risk scan)
+
+*(Output from `scan_distribution_warning`)*
+
+This scan inverts every other template on this page: a **higher score is a worse
+chart**. Never render it as a buy list, and never merge its rows into a
+candidates table. Its two legitimate uses are exiting something already held and
+vetoing a long signal another scan produced on the same ticker.
+
+```
+⚠️ DISTRIBUTION WARNING — [DD-MMM-YYYY HH:MM WIB]
+Universe: [universe_size] | With data: [tickers_with_data] | Flagged: [signals_found] | [elapsed_seconds]s
+Filters: [filters_applied, inline]
+
+| # | Ticker | Close | vs SMA50 | Drawdown | Warnings | Severity |
+|---|--------|-------|----------|----------|----------|----------|
+| 1 | [tkr]  | [cls] | [below/above] | [drawdown_from_60d_high_pct]% | [warnings, comma-separated] | [score] |
+
+Severity is a risk ranking, not a trade ranking — 100 is the most damaged chart.
+
+Overlap with long signals: [list any ticker appearing in both this scan and a
+long scan run in the same session, and treat that as a veto rather than a
+confluence]
+
+[DISCLAIMER]
+```
+
+**Reading the warning flags**
+
+| Flag | Meaning |
+|------|---------|
+| `close_below_sma50` | Price has lost its medium-term average |
+| `death_cross` | SMA50 below SMA200 (skipped when history is too short) |
+| `sma50_declining` | SMA50 lower than it was 20 sessions ago |
+| `macd_negative_and_falling` | Momentum negative and still deteriorating |
+| `lower_high` | The 20-day high sits below the 60-day high |
+| `heavy_volume_down_day` | Down close on ≥1.3× the 20-day average volume |
+
+---
+
+## Template 21 — Relative Strength
+
+*(Output from `scan_relative_strength`)*
+
+```
+📈 RELATIVE STRENGTH vs IHSG — [DD-MMM-YYYY HH:MM WIB]
+Universe: [universe_size] | With data: [tickers_with_data] | Leaders: [signals_found] | [elapsed_seconds]s
+
+| # | Ticker | Close | 1M vs IHSG | 3M vs IHSG | 6M vs IHSG | RS at 3mo high | Beta | Score |
+|---|--------|-------|-----------|-----------|-----------|----------------|------|-------|
+| 1 | [tkr]  | [cls] | [excess_1m_pct]pp | [excess_3m_pct]pp | [excess_6m_pct]pp | [yes/no] | [beta_63d] | [score] |
+
+IHSG over the same windows: 1M [ihsg_return_1m_pct]% | 3M [ihsg_return_3m_pct]%
+
+[DISCLAIMER]
+```
+
+Excess figures are percentage points of outperformance, not returns. Use this
+scan to qualify a signal from elsewhere: a setup scoring well on chart structure
+while lagging the index is a weak hand, and saying so is more useful than
+repeating the setup's own score.

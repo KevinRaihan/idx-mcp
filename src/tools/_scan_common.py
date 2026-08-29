@@ -27,14 +27,20 @@ def build_envelope(
     filters: dict,
     elapsed_s: float,
     top_n: int = 10,
+    funnel: dict | None = None,
 ) -> dict:
     """Assemble the standard scan response.
 
     ``top_10`` is kept as the primary key for backwards compatibility with the
     existing skill templates; ``signals`` is its alias.
+
+    ``funnel`` is an optional per-stage survivor count. Zero signals is an
+    ambiguous result — a quiet market and a broken scan look identical from the
+    outside, which is exactly how ``scan_volume_accumulation`` stayed silently
+    dead. A funnel says which filter emptied the room.
     """
     top = signals[:top_n]
-    return {
+    envelope = {
         "strategy": strategy,
         "scan_time_wib": format_wib_iso(now_wib()),
         "elapsed_seconds": round(elapsed_s, 1),
@@ -47,6 +53,9 @@ def build_envelope(
         "signals": top,
         "disclaimer": DISCLAIMER,
     }
+    if funnel is not None:
+        envelope["filter_funnel"] = funnel
+    return envelope
 
 
 def scan_timer():

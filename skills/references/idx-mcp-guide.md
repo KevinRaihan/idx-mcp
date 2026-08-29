@@ -30,6 +30,11 @@ what parameters to pass, what fields are returned, and how to chain calls togeth
 | `scan_mean_reversion` | Deep-oversold capitulation scan — RSI low, price well below SMA20 |
 | `scan_volatility_squeeze` | Bollinger width at a 6-month low with MACD turning up |
 | `scan_volume_accumulation` | Volume spike on a tight intraday range and an up close |
+| `scan_relative_strength` | Outperformance vs the IHSG over 1/3/6 months + RS line |
+| `scan_trend_pullback` | Dip to SMA20 inside a confirmed uptrend, structure intact |
+| `scan_breakout_high` | Close above a tight multi-month base on volume (Darvas box) |
+| `scan_distribution_warning` | RISK scan — charts breaking down, ranked by severity |
+| `scan_gap` | Gap-ups that held, or gap-down exhaustion reversals |
 
 ---
 
@@ -1007,6 +1012,22 @@ with a higher `win_prob` to manufacture an edge.
 | `scan_mean_reversion` | `rsi_threshold` (30.0), `min_volume` (500000), `min_below_sma20_pct` (5.0) |
 | `scan_volatility_squeeze` | `min_volume` (1000000), `squeeze_tolerance` (1.10) |
 | `scan_volume_accumulation` | `min_volume` (1000000), `vol_multiple` (3.0), `max_spread_pct` (5.0) |
+| `scan_relative_strength` | `min_volume` (500000), `min_excess_3m_pct` (5.0), `require_rs_high` (false) |
+| `scan_trend_pullback` | `min_volume` (500000), `rsi_min` (40.0), `rsi_max` (58.0), `max_pullback_pct` (15.0) |
+| `scan_breakout_high` | `min_volume` (500000), `lookback_days` (60), `vol_multiple` (1.5), `max_base_range_pct` (25.0) |
+| `scan_distribution_warning` | `min_volume` (500000), `min_warning_score` (50.0) |
+| `scan_gap` | `min_volume` (500000), `min_gap_pct` (2.0), `direction` ("up") |
+
+All ten market-wide scans read one shared universe fetch (`src/tools/universe.py`), so
+running the full ensemble costs a single pass over the 178 tickers, not ten. The first
+scan pays roughly 14s; each one after it returns in under a second.
+
+`scan_distribution_warning` inverts the usual reading: a **higher** `confidence_score`
+means a worse chart. Never present its output as a buy list. Its `warnings` array names
+which symptoms fired (`death_cross`, `lower_high`, `heavy_volume_down_day`, ...).
+
+`scan_breakout_high` returns `filter_funnel` — per-stage survivor counts — so an empty
+result can be read as a market condition rather than a broken filter.
 
 Shared response shape:
 

@@ -239,13 +239,15 @@ def test_server_completes_a_real_stdio_session():
     ])
 
     assert init["result"]["serverInfo"]["name"] == "idx-mcp"
-    assert init["result"]["serverInfo"]["version"] == "1.1.0"
+    assert init["result"]["serverInfo"]["version"] == "1.2.0"
 
     listed = tools["result"]["tools"]
-    assert len(listed) == 21
+    assert len(listed) == 26
     assert {t["name"] for t in listed} >= {
         "get_stock_price", "scan_mean_reversion",
         "scan_volatility_squeeze", "scan_volume_accumulation",
+        "scan_relative_strength", "scan_trend_pullback", "scan_breakout_high",
+        "scan_distribution_warning", "scan_gap",
     }
 
     payload = json.loads(price["result"]["content"][0]["text"])
@@ -278,3 +280,138 @@ def test_server_exits_loudly_when_dependencies_are_missing(tmp_path):
     assert proc.returncode == 1
     assert "install is incomplete" in proc.stderr
     assert "simulated broken install" in proc.stderr
+
+
+# ── v1.2 scanners ─────────────────────────────────────────────────────────────
+
+from src.tools.breakout_high import scan_breakout_high          # noqa: E402
+from src.tools.distribution import scan_distribution_warning    # noqa: E402
+from src.tools.gap import scan_gap                              # noqa: E402
+from src.tools.relative_strength import scan_relative_strength  # noqa: E402
+from src.tools.trend_pullback import scan_trend_pullback        # noqa: E402
+from src.tools import universe as _universe                     # noqa: E402
+
+
+@pytest.mark.parametrize("scan", [
+    scan_relative_strength, scan_trend_pullback, scan_breakout_high,
+    scan_distribution_warning, scan_gap,
+])
+async def test_live_v12_scans_return_a_well_formed_envelope(scan):
+    r = await scan()
+    assert not r.get("error"), r
+
+    assert r["universe_size"] == len(_load_tickers())
+    assert r["tickers_with_data"] > r["universe_size"] * 0.8
+    assert r["tickers_with_data"] + r["tickers_without_data"] == r["universe_size"]
+    assert len(r["top_10"]) <= 10
+    assert r["elapsed_seconds"] > 0
+    assert r["disclaimer"]
+
+    for sig in r["top_10"]:
+        assert sig["ticker"].isalnum()
+        assert sig["close"] > 0
+        assert 0 < sig["confidence_score"] <= 100
+
+    scores = [s["confidence_score"] for s in r["top_10"]]
+    assert scores == sorted(scores, reverse=True)
+
+
+async def test_live_relative_strength_signals_actually_beat_the_index():
+    r = await scan_relative_strength(min_excess_3m_pct=5.0)
+    assert not r.get("error"), r
+    assert r["filters_applied"]["benchmark"] == "^JKSE"
+
+    for sig in r["top_10"]:
+        assert sig["excess_3m_pct"] >= 5.0
+        # Excess return must reconcile with its two components.
+        assert sig["excess_3m_pct"] == pytest.approx(
+            sig["return_3m_pct"] - sig["ihsg_return_3m_pct"], abs=0.02
+        )
+
+
+async def test_live_relative_strength_rs_high_filter_narrows_the_result():
+    lenient = await scan_relative_strength(require_rs_high=False)
+    strict = await scan_relative_strength(require_rs_high=True)
+    assert strict["signals_found"] <= lenient["signals_found"]
+    for sig in strict["top_10"]:
+        assert sig["rs_at_3mo_high"] is True
+
+
+async def test_live_trend_pullback_signals_are_in_confirmed_uptrends():
+    r = await scan_trend_pullback()
+    assert not r.get("error"), r
+    for sig in r["top_10"]:
+        assert sig["close"] > sig["sma200"], f"{sig['ticker']} is not above its SMA200"
+        assert sig["sma50"] > sig["sma200"]
+        assert sig["close"] <= sig["sma20"], f"{sig['ticker']} has not pulled back"
+        assert sig["structure_intact"] is True
+        assert 40.0 <= sig["rsi"] <= 58.0
+
+
+async def test_live_breakout_signals_cleared_their_base_on_volume():
+    r = await scan_breakout_high()
+    assert not r.get("error"), r
+    for sig in r["top_10"]:
+        assert sig["close"] >= sig["prior_high"]
+        assert sig["volume_ratio"] >= 1.5
+        assert sig["base_range_pct"] <= 25.0
+        assert sig["prior_high"] > sig["prior_low"]
+
+
+async def test_live_distribution_signals_carry_their_reasons():
+    r = await scan_distribution_warning()
+    assert not r.get("error"), r
+    assert r["interpretation"]
+    for sig in r["top_10"]:
+        assert sig["warnings"], f"{sig['ticker']} scored without any warning flag"
+        assert sig["warning_count"] == len(sig["warnings"])
+        assert sig["confidence_score"] >= 50.0
+
+
+async def test_live_gap_signals_match_their_declared_direction():
+    up = await scan_gap(direction="up")
+    assert not up.get("error"), up
+    for sig in up["top_10"]:
+        assert sig["gap_direction"] == "up"
+        assert sig["gap_pct"] >= 2.0
+        assert sig["close"] > sig["prev_close"]
+
+    down = await scan_gap(direction="down")
+    assert not down.get("error"), down
+    for sig in down["top_10"]:
+        assert sig["gap_direction"] == "down"
+        assert sig["gap_pct"] <= -2.0
+        assert sig["close"] > sig["open"], "a gap-down signal must be a reversal candle"
+
+
+# ── the shared universe, under real network conditions ────────────────────────
+
+async def test_all_ten_live_scans_share_one_universe_download(monkeypatch):
+    """The structural claim: ten scanners cost one fetch of the universe, not ten."""
+    from src.tools.golden_cross import scan_golden_cross as _gc
+    from src.tools.scanner import scan_ma_breakout as _ma
+
+    calls: list[int] = []
+    real = _universe._download_batch
+
+    def counting(jk_tickers, period="1y", min_rows=20):
+        calls.append(len(jk_tickers))
+        return real(jk_tickers, period=period, min_rows=min_rows)
+
+    monkeypatch.setattr(_universe, "_download_batch", counting)
+    _universe.invalidate_universe()
+
+    for scan in (_ma, _gc, scan_mean_reversion, scan_volatility_squeeze,
+                 scan_volume_accumulation, scan_relative_strength,
+                 scan_trend_pullback, scan_breakout_high,
+                 scan_distribution_warning, scan_gap):
+        r = await scan()
+        assert not r.get("error"), f"{scan.__name__}: {r}"
+
+    universe = len(_load_tickers())
+    batches = -(-universe // _universe.BATCH_SIZE)   # ceil
+    assert len(calls) == batches, (
+        f"10 scans triggered {len(calls)} download batches; "
+        f"one pass over the universe is {batches}"
+    )
+    assert sum(calls) == universe

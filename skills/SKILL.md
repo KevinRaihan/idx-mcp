@@ -56,6 +56,26 @@ Ensemble scanners (v1.1 — add when the user asks "what should I buy today" or 
 - `scan_volume_accumulation` → volume spike on a tight intraday range and an up close.
   Params: `min_volume` (1M), `vol_multiple` (3.0), `max_spread_pct` (5.0)
 
+Ensemble scanners (v1.2 — five more strategies over the same universe):
+- `scan_relative_strength` → outperformance vs the IHSG over 1/3/6 months, RS line vs its
+  3-month high. Use it to sanity-check any other signal: a strong chart lagging the index
+  is a weak hand. Params: `min_volume` (500k), `min_excess_3m_pct` (5.0), `require_rs_high` (false)
+- `scan_trend_pullback` → dip inside a confirmed uptrend (above SMA200, SMA50>SMA200, below
+  SMA20, RSI 40-58, 20-day low above the 60-day low). Distinct from `scan_mean_reversion`,
+  which has no trend requirement and will return falling knives.
+  Params: `min_volume` (500k), `rsi_min` (40.0), `rsi_max` (58.0), `max_pullback_pct` (15.0)
+- `scan_breakout_high` → close above a tight multi-month base on volume (Darvas box).
+  Returns a `filter_funnel` explaining an empty result.
+  Params: `min_volume` (500k), `lookback_days` (60), `vol_multiple` (1.5), `max_base_range_pct` (25.0)
+- `scan_distribution_warning` → **RISK scan, not a buy list.** Charts breaking down, ranked by
+  severity; a higher score is a worse chart. Use it to exit/trim held positions, or to veto a
+  long signal another scan produced on the same ticker.
+  Params: `min_volume` (500k), `min_warning_score` (50.0)
+- `scan_gap` → gap-ups that held, or gap-down exhaustion reversals. Reports each gap as a share
+  of the IDX auto-rejection (ARA/ARB) band. Reads the last *completed* daily bar, so while the
+  market is open it reflects the previous session.
+  Params: `min_volume` (500k), `min_gap_pct` (2.0), `direction` ("up"/"down"/"both")
+
 Every scan returns `universe_size`, `tickers_with_data`, `signals_found` and a `top_10`
 array sorted by `confidence_score`. **Zero signals is a valid answer** — report it as a
 market condition rather than retrying. If the user wants more candidates, loosen the
