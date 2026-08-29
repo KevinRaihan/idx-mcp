@@ -94,7 +94,23 @@ which one you relaxed.
 ### Step 1b — Trade thesis (only when the user wants a position sized)
 1. `gather_intelligence(ticker)` → setup + catalysts
 2. Determine `win_prob` from the evidence
-3. `evaluate_and_log_thesis(...)` → fee-adjusted EV, logged for forward testing
+3. `evaluate_and_log_thesis(...)` → fee-adjusted EV, logged for forward testing.
+   `entry_price`, `stop_loss` and `target_price` are REQUIRED — a thesis without
+   them can never be scored later. Levels are validated against `direction`.
+
+### Step 3 — Forward test (when the user asks how the strategies are performing)
+`evaluate_predictions(strategy=None)` scores every logged thesis against the price
+history that followed it. Read it before quoting any strategy as reliable.
+
+- Only `hit_target` and `hit_stop` count toward `realized_win_rate`. `pending` means
+  no session has closed since logging; `open` means still live; `no_data` and
+  `no_levels` are unscorable.
+- `calibration_gap` = predicted minus realized win rate. Positive means the theses
+  were optimistic. Report it per strategy, not just overall.
+- Entries whose `levels_source` is not `declared` were reconstructed from an older
+  record — say so rather than presenting them as equally solid.
+- A thesis that touched target and stop in the same session is scored as a stop and
+  flagged `same_bar_ambiguous`; do not re-report it as a win.
 
 `evaluate_and_log_thesis` requires `position_value_idr` — the IDR transaction value of
 the intended position (entry price × shares). IDX fees are charged on transaction value,

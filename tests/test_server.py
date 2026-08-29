@@ -74,7 +74,7 @@ def test_the_registry_holds_all_ten_market_scans():
         "scan_distribution_warning", "scan_gap",
     }
     assert scans <= TOOL_NAMES
-    assert len(server.TOOLS) == 26
+    assert len(server.TOOLS) == 27
 
 
 def test_gap_direction_enum_matches_the_implementation():

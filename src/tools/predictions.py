@@ -8,8 +8,10 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
-from datetime import datetime, timezone
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -25,6 +27,38 @@ logger = logging.getLogger("idx-mcp.tools.predictions")
 
 # Serialises read-modify-write on the predictions log within a single process.
 _log_lock = threading.Lock()
+
+try:
+    import fcntl
+except ImportError:          # non-POSIX; the advisory lock degrades to a no-op
+    fcntl = None
+
+
+@contextmanager
+def _log_file_lock(log_file: Path):
+    """Hold an exclusive lock across the whole read-modify-write of the log.
+
+    The threading lock above only serialises writers inside one interpreter.
+    This log is written by more than one process — a Claude Code session and
+    the Antigravity app each run their own server — and both do read, append,
+    write. Interleave those and the second write silently drops whatever the
+    first appended, on the file that is the entire forward-testing dataset.
+
+    The lock lives on a sidecar file so it is never the target of the atomic
+    replace that swaps the log itself.
+    """
+    if fcntl is None:
+        yield
+        return
+
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = log_file.with_suffix(log_file.suffix + ".lock")
+    with open(lock_path, "w", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 async def get_trade_setup(ticker: str, lookback_days: int = 60) -> dict:
@@ -285,6 +319,9 @@ async def calculate_expected_value(
         return {"error": True, "message": f"Failed to calculate EV: {str(e)}"}
 
 
+SCHEMA_VERSION = 3
+
+
 async def log_prediction_snapshot(
     ticker: str,
     initial_ev: float,
@@ -295,8 +332,18 @@ async def log_prediction_snapshot(
     position_value_idr: float | None = None,
     profit_target_idr: float | None = None,
     loss_target_idr: float | None = None,
+    entry_price: float | None = None,
+    stop_loss: float | None = None,
+    target_price: float | None = None,
+    direction: str = "long",
 ) -> dict:
-    """Append the AI agent's trade thesis into a structured predictions_log.json file."""
+    """Append the AI agent's trade thesis into a structured predictions_log.json file.
+
+    ``entry_price``, ``stop_loss`` and ``target_price`` are what make a logged
+    thesis falsifiable. Schema 2 recorded only IDR magnitudes, so nothing could
+    later look at the price history and say whether the trade would have hit its
+    target or its stop — the log accumulated theses it could never score.
+    """
     try:
         normalized = validate_ticker(ticker)
     except ValueError as e:
@@ -310,6 +357,46 @@ async def log_prediction_snapshot(
             "message": f"target_date must be YYYY-MM-DD, got {target_date!r}.",
         }
 
+    direction = str(direction).lower().strip()
+    if direction not in ("long", "short"):
+        return {"error": True, "message": "direction must be 'long' or 'short'."}
+
+    levels = (entry_price, stop_loss, target_price)
+    if any(v is None for v in levels):
+        return {
+            "error": True,
+            "message": (
+                "entry_price, stop_loss and target_price are all required — without "
+                "them the thesis cannot be scored against price history later."
+            ),
+        }
+    try:
+        entry_price, stop_loss, target_price = (float(v) for v in levels)
+    except (TypeError, ValueError):
+        return {"error": True, "message": "Trade levels must be numeric."}
+
+    if min(entry_price, stop_loss, target_price) <= 0:
+        return {"error": True, "message": "Trade levels must be positive."}
+
+    # A stop on the wrong side of entry is almost always a transposed argument,
+    # and it would quietly invert every outcome this thesis is later scored on.
+    if direction == "long" and not (stop_loss < entry_price < target_price):
+        return {
+            "error": True,
+            "message": (
+                f"For a long, expected stop_loss < entry_price < target_price; got "
+                f"{stop_loss} / {entry_price} / {target_price}."
+            ),
+        }
+    if direction == "short" and not (target_price < entry_price < stop_loss):
+        return {
+            "error": True,
+            "message": (
+                f"For a short, expected target_price < entry_price < stop_loss; got "
+                f"{target_price} / {entry_price} / {stop_loss}."
+            ),
+        }
+
     snapshot = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "ticker": normalized,
@@ -319,14 +406,19 @@ async def log_prediction_snapshot(
         "position_value_idr": position_value_idr,
         "profit_target_idr": profit_target_idr,
         "loss_target_idr": loss_target_idr,
+        "entry_price": entry_price,
+        "stop_loss": stop_loss,
+        "target_price": target_price,
+        "direction": direction,
+        "levels_source": "declared",
         "reasoning": reasoning,
         "target_date": target_date,
-        "schema_version": 2,
+        "schema_version": SCHEMA_VERSION,
     }
 
     try:
-        with _log_lock:
-            log_file = predictions_log_file()
+        log_file = predictions_log_file()
+        with _log_lock, _log_file_lock(log_file):
             logs = _read_predictions_log(log_file)
             logs.append(snapshot)
             _atomic_write_json(log_file, logs)
@@ -431,6 +523,10 @@ async def evaluate_and_log_thesis(
     reasoning: str,
     target_date: str,
     strategy_name: str,
+    entry_price: float | None = None,
+    stop_loss: float | None = None,
+    target_price: float | None = None,
+    direction: str = "long",
     buy_fee_rate: float = 0.0015,
     sell_fee_rate: float = 0.0025,
 ) -> dict:
@@ -462,6 +558,10 @@ async def evaluate_and_log_thesis(
         position_value_idr=position_value_idr,
         profit_target_idr=profit_target_idr,
         loss_target_idr=loss_target_idr,
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        target_price=target_price,
+        direction=direction,
     )
 
     return {
