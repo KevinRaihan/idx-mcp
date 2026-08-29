@@ -44,6 +44,7 @@ from .scanner import (
     _i,
     get_tick_size,
 )
+from .universe import load_universe
 
 logger = logging.getLogger("idx-mcp.tools.golden_cross")
 
@@ -442,15 +443,10 @@ def _run_full_scan(
     top_n:        int   = 10,
 ) -> dict:
     """Synchronous full-market golden cross + stochastic scan."""
-    tickers         = _load_tickers()
-    jk_list         = [_to_jk(t) for t in tickers]
-    total_attempted = len(jk_list)
+    total_attempted = len(_load_tickers())
 
-    all_data: dict[str, pd.DataFrame] = {}
-    for i in range(0, len(jk_list), BATCH_SIZE):
-        chunk      = jk_list[i : i + BATCH_SIZE]
-        chunk_data = _download_batch(chunk, period="1y")
-        all_data.update(chunk_data)
+    # One shared universe fetch backs every scanner; see tools/universe.py.
+    all_data = load_universe(period="1y")
 
     total_scanned = len(all_data)
     signals: list[dict] = []

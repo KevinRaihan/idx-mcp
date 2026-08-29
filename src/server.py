@@ -38,6 +38,11 @@ try:
     from .tools.mean_reversion import scan_mean_reversion
     from .tools.vol_squeeze import scan_volatility_squeeze
     from .tools.volume_accumulation import scan_volume_accumulation
+    from .tools.relative_strength import scan_relative_strength
+    from .tools.trend_pullback import scan_trend_pullback
+    from .tools.breakout_high import scan_breakout_high
+    from .tools.distribution import scan_distribution_warning
+    from .tools.gap import scan_gap
 except ImportError as e:
     # Failing fast is the only honest option here. Substituting stubs made the
     # server advertise 21 healthy tools that every raised at call time, so a
@@ -75,7 +80,7 @@ def _sanitize_nans(obj):
     return obj
 
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 
 class ToolArgumentError(ValueError):
@@ -496,7 +501,7 @@ TOOLS = [
     Tool(
         name="scan_mean_reversion",
         description=(
-            "Run a full BEI Mean Reversion (deep oversold) scan across ~237 actively traded "
+            "Run a full BEI Mean Reversion (deep oversold) scan across ~178 actively traded "
             "stocks. Finds capitulation setups: RSI below the threshold while price sits well "
             "under its SMA20 on real volume. Returns signals ranked by confidence score (0-100). "
             "Scan takes ~30-90 seconds; results cache for 4 hours."
@@ -533,7 +538,7 @@ TOOLS = [
     Tool(
         name="scan_volatility_squeeze",
         description=(
-            "Run a full BEI Volatility Squeeze scan across ~237 actively traded stocks. "
+            "Run a full BEI Volatility Squeeze scan across ~178 actively traded stocks. "
             "Finds stocks whose Bollinger Band width is at its 6-month low while the MACD "
             "histogram is turning up — a coiled setup ahead of an expansion move. "
             "Returns signals ranked by confidence score (0-100). "
@@ -564,7 +569,7 @@ TOOLS = [
     Tool(
         name="scan_volume_accumulation",
         description=(
-            "Run a full BEI Volume Accumulation scan across ~237 actively traded stocks. "
+            "Run a full BEI Volume Accumulation scan across ~178 actively traded stocks. "
             "Finds stocks trading at a multiple of their 20-day average volume while the "
             "intraday range stays tight and the close holds up — quiet accumulation before "
             "a move. Returns signals ranked by confidence score (0-100). "
@@ -596,6 +601,217 @@ TOOLS = [
                     ),
                     "default": 5.0,
                     "exclusiveMinimum": 0,
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="scan_relative_strength",
+        description=(
+            "Run a full BEI Relative Strength scan across ~178 actively traded stocks. "
+            "Ranks stocks by how far they are outperforming the IHSG (^JKSE) over 1, 3 and "
+            "6 months, and reports whether the RS line is at a 3-month high. Use this to "
+            "check whether a setup found by another scan is actually leading the market or "
+            "merely drifting up with it — a strong chart lagging the index is a weak hand. "
+            "Scan takes ~30-90 seconds; results cache for 4 hours."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "min_volume": {
+                    "type": "integer",
+                    "description": "Minimum daily volume filter (default 500,000)",
+                    "default": 500000,
+                    "minimum": 0,
+                },
+                "min_excess_3m_pct": {
+                    "type": "number",
+                    "description": (
+                        "Minimum 3-month outperformance over the IHSG, in percentage points "
+                        "(default 5.0; higher = stricter)"
+                    ),
+                    "default": 5.0,
+                },
+                "require_rs_high": {
+                    "type": "boolean",
+                    "description": (
+                        "Require the RS line to be at or near its 3-month high "
+                        "(default false; true = stricter, leadership confirmed)"
+                    ),
+                    "default": False,
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="scan_trend_pullback",
+        description=(
+            "Run a full BEI Trend Pullback scan across ~178 actively traded stocks. "
+            "Finds dips inside confirmed uptrends: price above SMA200 with SMA50 above "
+            "SMA200, pulled back below SMA20 but holding SMA50, RSI cooled into the 40s, "
+            "and the 20-day low still above the 60-day low so structure is intact. "
+            "Unlike scan_mean_reversion this requires an existing uptrend, and unlike "
+            "scan_golden_cross it does not need a recent cross. "
+            "Scan takes ~30-90 seconds; results cache for 4 hours."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "min_volume": {
+                    "type": "integer",
+                    "description": "Minimum daily volume filter (default 500,000)",
+                    "default": 500000,
+                    "minimum": 0,
+                },
+                "rsi_min": {
+                    "type": "number",
+                    "description": "Lower RSI(14) bound for the pullback (default 40.0)",
+                    "default": 40.0,
+                    "minimum": 0,
+                    "maximum": 100,
+                },
+                "rsi_max": {
+                    "type": "number",
+                    "description": "Upper RSI(14) bound for the pullback (default 58.0)",
+                    "default": 58.0,
+                    "minimum": 0,
+                    "maximum": 100,
+                },
+                "max_pullback_pct": {
+                    "type": "number",
+                    "description": (
+                        "Maximum drop from the 60-day high, in percent "
+                        "(default 15.0; deeper than this questions the trend)"
+                    ),
+                    "default": 15.0,
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="scan_breakout_high",
+        description=(
+            "Run a full BEI Breakout-to-New-High (Darvas box) scan across ~178 actively "
+            "traded stocks. Finds stocks closing above the highest high of a tight "
+            "multi-month base on confirming volume, and reports whether the breakout is "
+            "also a 52-week high. Complements scan_ma_breakout, which requires moving "
+            "average compression that a range breakout does not need. "
+            "Scan takes ~30-90 seconds; results cache for 4 hours."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "min_volume": {
+                    "type": "integer",
+                    "description": "Minimum daily volume filter (default 500,000)",
+                    "default": 500000,
+                    "minimum": 0,
+                },
+                "lookback_days": {
+                    "type": "integer",
+                    "description": (
+                        "Length of the base the close must break above, in trading days "
+                        "(default 60; longer = stricter)"
+                    ),
+                    "default": 60,
+                    "minimum": 10,
+                    "maximum": 250,
+                },
+                "vol_multiple": {
+                    "type": "number",
+                    "description": (
+                        "Required multiple of the 20-day average volume on the breakout bar "
+                        "(default 1.5; higher = stricter)"
+                    ),
+                    "default": 1.5,
+                    "exclusiveMinimum": 0,
+                },
+                "max_base_range_pct": {
+                    "type": "number",
+                    "description": (
+                        "Maximum high-to-low range of the base as percent of its mean price "
+                        "(default 25.0; lower = tighter base, stricter)"
+                    ),
+                    "default": 25.0,
+                    "exclusiveMinimum": 0,
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="scan_distribution_warning",
+        description=(
+            "Run a full BEI Distribution Warning scan across ~178 actively traded stocks. "
+            "This is a RISK scan, not a buy list: it flags charts that are breaking down "
+            "(close below SMA50, death cross, declining SMA50, MACD negative and falling, "
+            "lower highs, heavy-volume down days) and ranks them by severity. Use it to "
+            "exit or trim held positions, or to veto a long signal that another scan "
+            "produced on the same ticker. A higher score means a worse chart. "
+            "Scan takes ~30-90 seconds; results cache for 4 hours."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "min_volume": {
+                    "type": "integer",
+                    "description": "Minimum daily volume filter (default 500,000)",
+                    "default": 500000,
+                    "minimum": 0,
+                },
+                "min_warning_score": {
+                    "type": "number",
+                    "description": (
+                        "Minimum severity score to report, 0-100 "
+                        "(default 50.0; higher = only the worst charts)"
+                    ),
+                    "default": 50.0,
+                    "minimum": 0,
+                    "maximum": 100,
+                },
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="scan_gap",
+        description=(
+            "Run a full BEI Gap scan across ~178 actively traded stocks. Finds opening gaps "
+            "that held (gap up, never filled back to the prior close, closed at or above the "
+            "open) or gap-down exhaustion reversals (gapped down, closed above the open). "
+            "Each signal reports how much of the IDX auto-rejection (ARA/ARB) band the gap "
+            "consumed. Reads the last completed daily bar, so while the market is open this "
+            "reflects the previous session. Results cache for 4 hours."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "min_volume": {
+                    "type": "integer",
+                    "description": "Minimum daily volume filter (default 500,000)",
+                    "default": 500000,
+                    "minimum": 0,
+                },
+                "min_gap_pct": {
+                    "type": "number",
+                    "description": (
+                        "Minimum absolute gap from the prior close, in percent "
+                        "(default 2.0; higher = stricter)"
+                    ),
+                    "default": 2.0,
+                    "exclusiveMinimum": 0,
+                },
+                "direction": {
+                    "type": "string",
+                    "description": (
+                        "'up' for gap-ups that held, 'down' for gap-down exhaustion "
+                        "reversals, 'both' for either (default 'up')"
+                    ),
+                    "enum": ["up", "down", "both"],
+                    "default": "up",
                 },
             },
             "required": [],
@@ -709,6 +925,37 @@ async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
                 arguments.get("vol_multiple", 3.0),
                 arguments.get("max_spread_pct", 5.0),
             )
+        elif name == "scan_relative_strength":
+            result = await scan_relative_strength(
+                arguments.get("min_volume", 500_000),
+                arguments.get("min_excess_3m_pct", 5.0),
+                arguments.get("require_rs_high", False),
+            )
+        elif name == "scan_trend_pullback":
+            result = await scan_trend_pullback(
+                arguments.get("min_volume", 500_000),
+                arguments.get("rsi_min", 40.0),
+                arguments.get("rsi_max", 58.0),
+                arguments.get("max_pullback_pct", 15.0),
+            )
+        elif name == "scan_breakout_high":
+            result = await scan_breakout_high(
+                arguments.get("min_volume", 500_000),
+                arguments.get("lookback_days", 60),
+                arguments.get("vol_multiple", 1.5),
+                arguments.get("max_base_range_pct", 25.0),
+            )
+        elif name == "scan_distribution_warning":
+            result = await scan_distribution_warning(
+                arguments.get("min_volume", 500_000),
+                arguments.get("min_warning_score", 50.0),
+            )
+        elif name == "scan_gap":
+            result = await scan_gap(
+                arguments.get("min_volume", 500_000),
+                arguments.get("min_gap_pct", 2.0),
+                arguments.get("direction", "up"),
+            )
         else:
             result = {
                 "error": True,
@@ -722,7 +969,9 @@ async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
                     "get_company_profile, scan_ma_breakout, get_top10, analyze_ticker, "
                     "get_prediction, run_backtest, get_scan_summary, "
                     "scan_golden_cross, get_top_golden_cross, analyze_golden_cross, "
-                    "scan_mean_reversion, scan_volatility_squeeze, scan_volume_accumulation"
+                    "scan_mean_reversion, scan_volatility_squeeze, scan_volume_accumulation, "
+                    "scan_relative_strength, scan_trend_pullback, scan_breakout_high, "
+                    "scan_distribution_warning, scan_gap"
                 ),
             }
 

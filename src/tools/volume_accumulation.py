@@ -12,7 +12,8 @@ import pandas as pd
 from ..utils.cache import cache
 from ..utils.formatting import safe_round
 from ._scan_common import build_envelope, elapsed_since, log_ticker_failure, scan_timer
-from .scanner import _download_batch, _f, _load_tickers, _to_jk
+from .scanner import _f, _load_tickers, _to_jk
+from .universe import load_universe
 
 logger = logging.getLogger("idx-mcp.tools.volume_accumulation")
 
@@ -110,9 +111,8 @@ def _run_full_scan(
     tickers = _load_tickers()
     jk_list = [_to_jk(t) for t in tickers]
 
-    all_data: dict[str, pd.DataFrame] = {}
-    for i in range(0, len(jk_list), BATCH_SIZE):
-        all_data.update(_download_batch(jk_list[i : i + BATCH_SIZE], period=SCAN_PERIOD))
+    # One shared universe fetch backs every scanner; see tools/universe.py.
+    all_data = load_universe(period=SCAN_PERIOD)
 
     signals = []
     for ticker_clean, df in all_data.items():

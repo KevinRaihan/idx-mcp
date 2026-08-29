@@ -51,6 +51,63 @@ def test_new_scanner_tools_expose_their_tunables():
         assert set(schema_of(by_name[name])["properties"]) == params
 
 
+def test_v12_scanner_tools_expose_their_tunables():
+    expected = {
+        "scan_relative_strength": {"min_volume", "min_excess_3m_pct", "require_rs_high"},
+        "scan_trend_pullback": {"min_volume", "rsi_min", "rsi_max", "max_pullback_pct"},
+        "scan_breakout_high": {"min_volume", "lookback_days", "vol_multiple",
+                               "max_base_range_pct"},
+        "scan_distribution_warning": {"min_volume", "min_warning_score"},
+        "scan_gap": {"min_volume", "min_gap_pct", "direction"},
+    }
+    by_name = {t.name: t for t in server.TOOLS}
+    for name, params in expected.items():
+        assert name in by_name, f"{name} is not registered"
+        assert set(schema_of(by_name[name])["properties"]) == params
+
+
+def test_the_registry_holds_all_ten_market_scans():
+    scans = {
+        "scan_ma_breakout", "scan_golden_cross", "scan_mean_reversion",
+        "scan_volatility_squeeze", "scan_volume_accumulation",
+        "scan_relative_strength", "scan_trend_pullback", "scan_breakout_high",
+        "scan_distribution_warning", "scan_gap",
+    }
+    assert scans <= TOOL_NAMES
+    assert len(server.TOOLS) == 26
+
+
+def test_gap_direction_enum_matches_the_implementation():
+    """A schema enum that drifts from the validator produces a confusing rejection."""
+    from src.tools.gap import VALID_DIRECTIONS
+
+    tool = next(t for t in server.TOOLS if t.name == "scan_gap")
+    assert set(schema_of(tool)["properties"]["direction"]["enum"]) == set(VALID_DIRECTIONS)
+
+
+def test_scanner_defaults_in_dispatch_match_the_schema_defaults():
+    """A default that disagrees with its schema silently changes what an agent gets."""
+    import inspect
+    import re
+
+    source = inspect.getsource(server.call_tool)
+    by_name = {t.name: t for t in server.TOOLS}
+
+    for name in ("scan_relative_strength", "scan_trend_pullback", "scan_breakout_high",
+                 "scan_distribution_warning", "scan_gap"):
+        props = schema_of(by_name[name])["properties"]
+        block = source.split(f'name == "{name}"')[1].split("elif name ==")[0]
+        for param, spec in props.items():
+            if "default" not in spec:
+                continue
+            match = re.search(rf'arguments\.get\("{param}",\s*([^)]+)\)', block)
+            assert match, f"{name}.{param} is not read in dispatch"
+            literal = match.group(1).strip().rstrip(",").replace("_", "")
+            expected = spec["default"]
+            actual = eval(literal)  # noqa: S307 — literals from our own source
+            assert actual == expected, f"{name}.{param}: dispatch {actual} != schema {expected}"
+
+
 def test_thesis_tool_requires_position_value():
     tool = next(t for t in server.TOOLS if t.name == "evaluate_and_log_thesis")
     schema = schema_of(tool)

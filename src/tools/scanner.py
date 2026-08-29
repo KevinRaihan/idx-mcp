@@ -505,17 +505,14 @@ def _run_full_scan(
     top_n:       int   = 10,
 ) -> dict:
     """Synchronous full-market scan. Runs in asyncio.to_thread."""
-    tickers = _load_tickers()
-    jk_list = [_to_jk(t) for t in tickers]
-    total_attempted = len(jk_list)   # M-7: track attempted vs downloaded
+    # Imported here rather than at module scope: universe.py builds on
+    # _download_batch from this module, so a top-level import would be circular.
+    from .universe import load_universe
 
-    all_data: dict[str, pd.DataFrame] = {}
+    total_attempted = len(_load_tickers())   # M-7: track attempted vs downloaded
 
-    # Process in chunks of BATCH_SIZE to avoid yfinance limits
-    for i in range(0, len(jk_list), BATCH_SIZE):
-        chunk = jk_list[i : i + BATCH_SIZE]
-        chunk_data = _download_batch(chunk, period="1y")
-        all_data.update(chunk_data)
+    # One shared universe fetch backs every scanner; see tools/universe.py.
+    all_data = load_universe(period="1y")
 
     total_scanned = len(all_data)
     signals: list[dict] = []
