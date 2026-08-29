@@ -20,6 +20,7 @@ try:
         gather_intelligence,
         evaluate_and_log_thesis
     )
+    from .tools.evaluation import evaluate_predictions
     from .tools.market_overview import get_market_overview
     from .tools.company_profile import get_company_profile
     from .tools.scanner import (
@@ -80,7 +81,7 @@ def _sanitize_nans(obj):
     return obj
 
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 
 class ToolArgumentError(ValueError):
@@ -260,6 +261,36 @@ TOOLS = [
                     "type": "string",
                     "description": "The name of the scan strategy that triggered this trade (e.g. 'scan_golden_cross', 'scan_mean_reversion')",
                 },
+                "entry_price": {
+                    "type": "number",
+                    "description": (
+                        "Intended entry price per share. Required: without the trade "
+                        "levels the thesis can never be scored against price history."
+                    ),
+                    "exclusiveMinimum": 0,
+                },
+                "stop_loss": {
+                    "type": "number",
+                    "description": (
+                        "Stop-loss price per share. Must be below entry_price for a "
+                        "long, above it for a short."
+                    ),
+                    "exclusiveMinimum": 0,
+                },
+                "target_price": {
+                    "type": "number",
+                    "description": (
+                        "Profit-target price per share. Must be above entry_price for "
+                        "a long, below it for a short."
+                    ),
+                    "exclusiveMinimum": 0,
+                },
+                "direction": {
+                    "type": "string",
+                    "description": "Trade direction (default 'long')",
+                    "enum": ["long", "short"],
+                    "default": "long",
+                },
                 "buy_fee_rate": {
                     "type": "number",
                     "description": "Buy fee rate (default 0.0015 = 0.15%)",
@@ -274,7 +305,43 @@ TOOLS = [
             "required": [
                 "ticker", "win_prob", "profit_target_idr", "loss_target_idr",
                 "position_value_idr", "reasoning", "target_date", "strategy_name",
+                "entry_price", "stop_loss", "target_price",
             ],
+        },
+    ),
+    Tool(
+        name="evaluate_predictions",
+        description=(
+            "Score every logged trade thesis against the price history that followed it. "
+            "Walks daily bars from the session after each thesis was logged and reports "
+            "whether it hit its target or its stop first, plus realized win rate, average "
+            "return, realized P&L, and the calibration gap between predicted and realized "
+            "win rates — broken down per strategy. This is the forward test: use it to find "
+            "out whether a strategy's confidence scores mean anything before trusting them. "
+            "A thesis whose target and stop were both touched in one session is scored "
+            "pessimistically as a stop and flagged."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "strategy": {
+                    "type": "string",
+                    "description": (
+                        "Only score theses whose strategy name contains this substring "
+                        "(e.g. 'golden_cross'). Omit to score everything."
+                    ),
+                },
+                "include_open": {
+                    "type": "boolean",
+                    "description": (
+                        "Include theses that have not yet resolved and are still within "
+                        "their target date (default true). Aggregates always count them "
+                        "separately from decided trades."
+                    ),
+                    "default": True,
+                },
+            },
+            "required": [],
         },
     ),
     Tool(
@@ -855,17 +922,28 @@ async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
                 arguments.get("max_articles", 5),
             )
         elif name == "evaluate_and_log_thesis":
+            # Keyword arguments deliberately: this signature has grown twice, and
+            # a positional call silently rebinds every parameter after an insert.
             result = await evaluate_and_log_thesis(
-                _require(arguments, "ticker", name),
-                _require(arguments, "win_prob", name),
-                _require(arguments, "profit_target_idr", name),
-                _require(arguments, "loss_target_idr", name),
-                _require(arguments, "position_value_idr", name),
-                _require(arguments, "reasoning", name),
-                _require(arguments, "target_date", name),
-                _require(arguments, "strategy_name", name),
-                arguments.get("buy_fee_rate", 0.0015),
-                arguments.get("sell_fee_rate", 0.0025),
+                ticker=_require(arguments, "ticker", name),
+                win_prob=_require(arguments, "win_prob", name),
+                profit_target_idr=_require(arguments, "profit_target_idr", name),
+                loss_target_idr=_require(arguments, "loss_target_idr", name),
+                position_value_idr=_require(arguments, "position_value_idr", name),
+                reasoning=_require(arguments, "reasoning", name),
+                target_date=_require(arguments, "target_date", name),
+                strategy_name=_require(arguments, "strategy_name", name),
+                entry_price=_require(arguments, "entry_price", name),
+                stop_loss=_require(arguments, "stop_loss", name),
+                target_price=_require(arguments, "target_price", name),
+                direction=arguments.get("direction", "long"),
+                buy_fee_rate=arguments.get("buy_fee_rate", 0.0015),
+                sell_fee_rate=arguments.get("sell_fee_rate", 0.0025),
+            )
+        elif name == "evaluate_predictions":
+            result = await evaluate_predictions(
+                arguments.get("strategy"),
+                arguments.get("include_open", True),
             )
         elif name == "get_market_overview":
             result = await get_market_overview(
@@ -965,7 +1043,7 @@ async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
                 "suggestion": (
                     "Available tools: get_stock_price, get_financials, get_technicals, "
                     "get_broker_summary, get_foreign_flow, gather_intelligence, "
-                    "evaluate_and_log_thesis, get_market_overview, "
+                    "evaluate_and_log_thesis, evaluate_predictions, get_market_overview, "
                     "get_company_profile, scan_ma_breakout, get_top10, analyze_ticker, "
                     "get_prediction, run_backtest, get_scan_summary, "
                     "scan_golden_cross, get_top_golden_cross, analyze_golden_cross, "

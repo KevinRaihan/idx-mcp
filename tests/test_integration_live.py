@@ -258,10 +258,10 @@ def test_server_completes_a_real_stdio_session():
     ])
 
     assert init["result"]["serverInfo"]["name"] == "idx-mcp"
-    assert init["result"]["serverInfo"]["version"] == "1.3.0"
+    assert init["result"]["serverInfo"]["version"] == "1.4.0"
 
     listed = tools["result"]["tools"]
-    assert len(listed) == 26
+    assert len(listed) == 27
     assert {t["name"] for t in listed} >= {
         "get_stock_price", "scan_mean_reversion",
         "scan_volatility_squeeze", "scan_volume_accumulation",

@@ -1,8 +1,8 @@
 # idx-mcp — IDX Stock Data MCP Server
 
-A local MCP (Model Context Protocol) server that provides Indonesian Stock Exchange (IDX) data to Claude Code and Claude Desktop. Exposes **26 tools** returning structured JSON for stock prices, financials, technicals, broker flow, market-wide strategy scans, and trade-thesis evaluation.
+A local MCP (Model Context Protocol) server that provides Indonesian Stock Exchange (IDX) data to Claude Code and Claude Desktop. Exposes **27 tools** returning structured JSON for stock prices, financials, technicals, broker flow, market-wide strategy scans, and trade-thesis evaluation.
 
-**Version 1.3.0** — unified 2-step workflow plus a ten-strategy scanner ensemble over one shared universe fetch, with per-stage filter diagnostics on every scan.
+**Version 1.4.0** — unified 2-step workflow, a ten-strategy scanner ensemble over one shared universe fetch, and a forward test that scores its own logged theses.
 
 ## Architecture
 
@@ -40,6 +40,7 @@ plain pandas, which avoids a multi-minute JIT warm-up on first call.
 |------|-------------|
 | `gather_intelligence` | Step 1 — trade setup (price, SMA, ATR barriers) + news catalysts in one call |
 | `evaluate_and_log_thesis` | Step 2 — fee-adjusted Expected Value, then log the thesis for forward testing |
+| `evaluate_predictions` | Step 3 — score every logged thesis against the price history that followed |
 
 ### Strategy scanners
 | Tool | Strategy |
@@ -177,7 +178,7 @@ uv venv && uv pip install -e ".[dev]"
 }
 ```
 
-Restart Claude Desktop afterwards. It should report 26 tools.
+Restart Claude Desktop afterwards. It should report 27 tools.
 
 ## Data and log locations
 
@@ -190,6 +191,61 @@ stays read-only and can be installed anywhere:
 | `~/.idx-mcp/logs/predictions_log.json` | Forward-testing thesis log |
 
 Set `IDX_MCP_HOME` to relocate both.
+
+## The forward test
+
+`evaluate_and_log_thesis` writes a thesis; `evaluate_predictions` scores it. Until
+the latter existed the log was write-only — theses accumulated and nothing ever
+read them back, so every `win_prob` in the system was an assertion no evidence
+could contradict.
+
+Scoring walks the daily bars from the session **after** a thesis was logged and
+reports which came first, the target or the stop:
+
+| Outcome | Meaning |
+|---|---|
+| `hit_target` / `hit_stop` | Resolved. These are the only outcomes counted in the win rate |
+| `expired` | Target date passed with neither level touched; marked out at the last close |
+| `open` | Still live and inside its target date |
+| `pending` | Logged after the most recent close; no session has elapsed yet |
+| `no_data` / `no_levels` | Unscorable — a failed fetch, or a pre-v3 record with no recoverable levels |
+
+Two deliberate choices keep it honest:
+
+* **Entry timing.** Scoring starts the session after the log timestamp. A thesis
+  written against today's close could not have been entered today, and grading
+  it from that bar would let it use information it did not have.
+* **Same-bar ambiguity.** When one session's high clears the target *and* its low
+  takes out the stop, daily bars cannot order the two touches. That resolves to
+  a stop and is flagged. A forward test that settles its own ambiguities in its
+  favour is not a test.
+
+`calibration_gap` is `mean_predicted_win_prob - realized_win_rate`. Positive means
+the logged theses were optimistic about themselves. It is reported per strategy,
+which is the point: it says which scans deserve to be trusted.
+
+## Trade levels are required
+
+`evaluate_and_log_thesis` requires `entry_price`, `stop_loss` and `target_price`.
+Schema 2 recorded only IDR magnitudes, which meant nothing could later look at
+the price history and say whether a thesis worked — the log physically could not
+be scored. Levels are validated against `direction`, so a transposed stop and
+target is rejected rather than silently inverting every future outcome.
+
+Older records are upgraded by `migrate_predictions_log()`, which recovers levels
+from prose where they were written into `reasoning`, otherwise reconstructs them
+from the logged IDR ratios against the close on the log date. Each entry records
+its `levels_source` — `declared`, `parsed_from_reasoning`,
+`reconstructed_from_ratios` or `unresolvable` — so weaker evidence stays visibly
+weaker.
+
+## Concurrent writers
+
+The predictions log has more than one writer: a Claude Code session and the
+Antigravity app each run their own server process. Both do read, append, write.
+An advisory `flock` spans the whole cycle, because a threading lock only
+serialises writers inside one interpreter. With the file lock disabled, four
+processes appending 12 entries each lose 2 of 48 — measured, not theorised.
 
 ## Expected Value semantics
 
