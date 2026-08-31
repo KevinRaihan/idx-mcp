@@ -21,6 +21,7 @@ import pandas as pd
 
 from ..utils.ohlcv import drop_incomplete_bars
 from ..utils.paths import predictions_log_file
+from ..utils.tick import round_to_tick, snap_levels
 from ..utils.ticker import to_yfinance_ticker, validate_ticker
 
 logger = logging.getLogger("idx-mcp.tools.predictions")
@@ -397,6 +398,25 @@ async def log_prediction_snapshot(
             ),
         }
 
+    # Snap to the IDX grid before the levels are frozen into the log. An
+    # off-grid level cannot be an order, so scoring a fill at one later would
+    # report a trade that was never available. Snapping is pessimistic, so a
+    # thesis is never made to look better than what could have been traded.
+    raw_levels = (entry_price, stop_loss, target_price)
+    snapped = snap_levels(entry_price, stop_loss, target_price, direction)
+    if snapped is None:
+        return {
+            "error": True,
+            "message": (
+                f"After snapping to the IDX tick grid these levels collapse onto the "
+                f"same price: {raw_levels[0]} / {raw_levels[1]} / {raw_levels[2]} "
+                f"became {tuple(round_to_tick(v, direction) for v in raw_levels)}. "
+                f"The stop or target is less than one tick from entry, so the trade "
+                f"has a zero-width leg and would resolve instantly. Widen it."
+            ),
+        }
+    entry_price, stop_loss, target_price = snapped
+
     snapshot = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "ticker": normalized,
@@ -411,6 +431,7 @@ async def log_prediction_snapshot(
         "target_price": target_price,
         "direction": direction,
         "levels_source": "declared",
+        "levels_snapped_to_tick": list(raw_levels) != list(snapped),
         "reasoning": reasoning,
         "target_date": target_date,
         "schema_version": SCHEMA_VERSION,

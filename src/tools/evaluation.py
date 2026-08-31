@@ -33,6 +33,7 @@ import yfinance as yf
 
 from ..utils.formatting import safe_round
 from ..utils.ohlcv import drop_incomplete_bars, drop_unsettled_session
+from ..utils.tick import snap_levels
 from ..utils.paths import predictions_log_file
 from ..utils.ticker import to_yfinance_ticker
 from .predictions import (
@@ -67,7 +68,9 @@ def _levels_from_reasoning(entry: dict) -> tuple[float, float, float] | None:
         e, s, t = (float(g) for g in match.groups())
     except ValueError:
         return None
-    return (e, s, t) if s < e < t else None
+    if not s < e < t:
+        return None
+    return snap_levels(e, s, t, entry.get("direction", "long"))
 
 
 def _levels_from_ratios(entry: dict, entry_price: float) -> tuple[float, float, float] | None:
@@ -87,7 +90,12 @@ def _levels_from_ratios(entry: dict, entry_price: float) -> tuple[float, float, 
         stop = entry_price * (1.0 - float(loss) / float(pos))
     except (TypeError, ValueError, ZeroDivisionError):
         return None
-    return (entry_price, stop, target) if stop < entry_price < target else None
+    if not stop < entry_price < target:
+        return None
+    # Reconstructed levels come out of a ratio and are almost never on the grid:
+    # every level in the v3 migration was off-grid, which is how a fill got
+    # reported at 1,411.41 on a tick of 5.
+    return snap_levels(entry_price, stop, target, entry.get("direction", "long"))
 
 
 def _logged_date(entry: dict) -> datetime | None:
@@ -361,6 +369,24 @@ def _score_all(strategy: str | None, include_open: bool) -> dict:
             entry["entry_price"], entry["stop_loss"], entry["target_price"] = recovered
             entry.setdefault("direction", "long")
             base["levels_source"] = source
+
+        # Snap whatever levels we ended up with, including ones read straight
+        # from the log. The v3 migration persisted reconstructed levels before
+        # this rule existed, so the stored file is full of prices that are not
+        # on the IDX grid and therefore could never have been filled. Snapping
+        # only at reconstruction time would miss every one of them.
+        direction = entry.get("direction", "long")
+        stored = (float(entry["entry_price"]), float(entry["stop_loss"]),
+                  float(entry["target_price"]))
+        snapped = snap_levels(*stored, direction)
+        if snapped is None:
+            scored.append({**base, "outcome": "no_levels",
+                           "note": ("levels collapse onto one tick once snapped to the "
+                                    "IDX grid; the trade has a zero-width leg")})
+            continue
+        if snapped != stored:
+            base["levels_snapped_to_tick"] = True
+        entry["entry_price"], entry["stop_loss"], entry["target_price"] = snapped
 
         target_dt = datetime.strptime(entry["target_date"], "%Y-%m-%d").replace(
             tzinfo=timezone.utc

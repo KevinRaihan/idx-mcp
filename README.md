@@ -229,6 +229,21 @@ Two deliberate choices keep it honest:
   filter untouched. Scanners keep the live bar deliberately; anything that
   scores an outcome does not.
 
+### Levels sit on the IDX tick grid
+
+Every price on IDX sits on a piecewise grid whose step widens with price — 1
+below 200, then 2, 5, 10, and 25 above 5,000. A level off that grid cannot be an
+order, so it cannot be a fill: scoring an outcome at one reports a trade that was
+never available. Levels are therefore snapped when they are logged and again
+when they are read, since the v3 migration persisted reconstructed levels before
+this rule existed.
+
+Snapping is pessimistic, matching how same-bar ambiguity is resolved: longs round
+up and shorts round down, so entry costs more, the stop sits nearer, and the
+target sits further. Rounding to nearest would let half of all reconstructed
+levels drift in the flattering direction. A trade whose legs are narrower than
+one tick collapses onto a single price and is rejected rather than snapped.
+
 `calibration_gap` is `mean_predicted_win_prob - realized_win_rate`. Positive means
 the logged theses were optimistic about themselves. It is reported per strategy,
 which is the point: it says which scans deserve to be trusted.

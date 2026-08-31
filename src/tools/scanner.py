@@ -90,18 +90,9 @@ def _strip_jk(ticker: str) -> str:
 
 # ── BEI tick size ─────────────────────────────────────────────────────────────
 
-def get_tick_size(price: float) -> float:
-    """BEI official piecewise tick size rules (IDX regulation)."""
-    if price <= 200:
-        return 1.0
-    elif price <= 500:
-        return 2.0
-    elif price <= 2_000:
-        return 5.0
-    elif price <= 5_000:
-        return 10.0
-    else:
-        return 25.0
+# Canonical home is src/utils/tick.py, which also owns the level-snapping rules.
+# Re-exported here so existing importers keep working.
+from ..utils.tick import get_tick_size  # noqa: E402,F401
 
 
 # ── Indicator helpers (pure pandas, no numba) ─────────────────────────────────
