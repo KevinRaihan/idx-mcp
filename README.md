@@ -2,7 +2,7 @@
 
 A local MCP (Model Context Protocol) server that provides Indonesian Stock Exchange (IDX) data to Claude Code and Claude Desktop. Exposes **27 tools** returning structured JSON for stock prices, financials, technicals, broker flow, market-wide strategy scans, and trade-thesis evaluation.
 
-**Version 1.4.0** — unified 2-step workflow, a ten-strategy scanner ensemble over one shared universe fetch, and a forward test that scores its own logged theses.
+**Version 1.4.1** — unified 2-step workflow, a ten-strategy scanner ensemble over one shared universe fetch, and a forward test that scores its own logged theses.
 
 ## Architecture
 
@@ -207,7 +207,7 @@ reports which came first, the target or the stop:
 | `hit_target` / `hit_stop` | Resolved. These are the only outcomes counted in the win rate |
 | `expired` | Target date passed with neither level touched; marked out at the last close |
 | `open` | Still live and inside its target date |
-| `pending` | Logged after the most recent close; no session has elapsed yet |
+| `pending` | Logged after the most recent *settled* close; no completed session to judge it on yet |
 | `no_data` / `no_levels` | Unscorable — a failed fetch, or a pre-v3 record with no recoverable levels |
 
 Two deliberate choices keep it honest:
@@ -219,6 +219,15 @@ Two deliberate choices keep it honest:
   takes out the stop, daily bars cannot order the two touches. That resolves to
   a stop and is flagged. A forward test that settles its own ambiguities in its
   favour is not a test.
+* **Settled sessions only.** The session currently trading is excluded until
+  16:15 WIB. Its high and low are running extremes, not final ones, so a target
+  touched at 09:38 can still be followed by a stop before the close — and under
+  the rule above that flips the outcome from a win to a loss. Scoring against a
+  live bar therefore resolves theses early *and* in the optimistic direction.
+  Dropping the NaN-close bar is not sufficient here: once trading opens, Yahoo
+  publishes a real OHLC row that is revised tick by tick, and it passes that
+  filter untouched. Scanners keep the live bar deliberately; anything that
+  scores an outcome does not.
 
 `calibration_gap` is `mean_predicted_win_prob - realized_win_rate`. Positive means
 the logged theses were optimistic about themselves. It is reported per strategy,

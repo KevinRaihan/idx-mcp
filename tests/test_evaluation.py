@@ -13,7 +13,9 @@ import pandas as pd
 import pytest
 
 from src.tools import evaluation as ev
+from src.tools.evaluation import resolve_outcome
 from src.tools.predictions import log_prediction_snapshot
+from src.utils.ohlcv import WIB, drop_incomplete_bars, drop_unsettled_session
 from src.utils.paths import predictions_log_file
 
 LEVELS = dict(entry_price=1_000.0, stop_loss=950.0, target_price=1_100.0)
@@ -333,3 +335,119 @@ async def test_a_thesis_logged_today_reports_pending(monkeypatch):
     assert r["summary"]["pending"] == 1
     assert r["summary"]["unscorable"] == 0
     assert r["predictions"][0]["outcome"] == "pending"
+
+
+# ── unsettled-session filtering ───────────────────────────────────────────────
+
+class TestUnsettledSession:
+    """The live session's High/Low are running extremes, not final ones.
+
+    Scoring against them resolves outcomes early and in the optimistic
+    direction: a long whose target is touched at 09:38 is reported hit_target,
+    even though the same session can still take out the stop before 16:15 and
+    flip it to a pessimistically-scored hit_stop.
+    """
+
+    @staticmethod
+    def _frame(dates):
+        return pd.DataFrame(
+            {"Open": 100.0, "High": 110.0, "Low": 95.0, "Close": 105.0, "Volume": 1_000},
+            index=pd.DatetimeIndex([pd.Timestamp(d, tz=WIB) for d in dates]),
+        )
+
+    def test_todays_bar_is_dropped_while_the_session_is_open(self):
+        df = self._frame(["2026-08-28", "2026-08-31"])
+        now = datetime(2026, 8, 31, 9, 38, tzinfo=WIB)
+        kept = drop_unsettled_session(df, now=now)
+        assert [d.isoformat() for d in kept.index.date] == ["2026-08-28"]
+
+    def test_todays_bar_is_kept_once_the_close_has_passed(self):
+        df = self._frame(["2026-08-28", "2026-08-31"])
+        now = datetime(2026, 8, 31, 16, 15, tzinfo=WIB)
+        kept = drop_unsettled_session(df, now=now)
+        assert [d.isoformat() for d in kept.index.date] == ["2026-08-28", "2026-08-31"]
+
+    def test_a_bar_one_minute_before_the_close_is_still_unsettled(self):
+        df = self._frame(["2026-08-31"])
+        now = datetime(2026, 8, 31, 16, 14, tzinfo=WIB)
+        assert drop_unsettled_session(df, now=now).empty
+
+    def test_the_nan_close_filter_alone_does_not_catch_a_live_bar(self):
+        """The bug this was written for: a live bar has real OHLC, so it passes."""
+        df = self._frame(["2026-08-28", "2026-08-31"])
+        assert len(drop_incomplete_bars(df)) == 2
+
+    def test_an_empty_or_non_datetime_frame_is_returned_untouched(self):
+        assert drop_unsettled_session(pd.DataFrame()).empty
+        plain = pd.DataFrame({"Close": [1.0]}, index=[0])
+        assert drop_unsettled_session(plain).equals(plain)
+
+    def test_a_target_touched_intraday_is_not_scored_until_the_session_closes(self):
+        """KRAS on 2026-08-31: entry 228, target 232.26, session high 234 by 09:38."""
+        entry = {"entry_price": 228.0, "stop_loss": 223.74, "target_price": 232.26,
+                 "direction": "long", "target_date": "2026-09-04"}
+        as_of = datetime(2026, 8, 31, 9, 38, tzinfo=timezone.utc)
+
+        live = self._frame(["2026-08-31"])
+        live.loc[live.index[0], ["High", "Low", "Close"]] = [234.0, 228.0, 230.0]
+
+        # Unfiltered, the running high resolves it as a win.
+        assert resolve_outcome(entry, live, as_of)["outcome"] == "hit_target"
+
+        # Filtered, there is simply nothing settled to judge it on yet.
+        settled = drop_unsettled_session(live, now=datetime(2026, 8, 31, 9, 38, tzinfo=WIB))
+        assert resolve_outcome(entry, settled, as_of)["outcome"] == "pending"
+
+
+class TestFetchDistinguishesEmptyFromFailed:
+    def test_a_frame_emptied_by_filtering_is_not_reported_as_a_failed_fetch(self, monkeypatch):
+        """Retrying a settled-session gap would mislabel `pending` as `no_data`."""
+        import src.tools.evaluation as ev
+
+        live = pd.DataFrame(
+            {"Open": 100.0, "High": 110.0, "Low": 95.0, "Close": 105.0, "Volume": 1_000},
+            index=pd.DatetimeIndex([pd.Timestamp("2026-08-31", tz=WIB)]),
+        )
+        calls = []
+
+        class FakeTicker:
+            def __init__(self, *a, **k):
+                pass
+
+            def history(self, **kwargs):
+                calls.append(kwargs)
+                return live
+
+        monkeypatch.setattr(ev.yf, "Ticker", FakeTicker)
+        monkeypatch.setattr(ev, "drop_unsettled_session", lambda df, **k: df.iloc[0:0])
+        ev._clear_bar_cache()
+
+        bars = ev._fetch_bars("KRAS", datetime(2026, 8, 28, tzinfo=timezone.utc),
+                              datetime(2026, 8, 31, tzinfo=timezone.utc))
+
+        assert bars is not None, "an empty-after-filter frame must not read as a failed fetch"
+        assert bars.empty
+        assert len(calls) == 1, "a settled-session gap must not burn retries"
+
+    def test_a_genuinely_empty_response_still_retries_and_reports_failure(self, monkeypatch):
+        import src.tools.evaluation as ev
+
+        calls = []
+
+        class FakeTicker:
+            def __init__(self, *a, **k):
+                pass
+
+            def history(self, **kwargs):
+                calls.append(kwargs)
+                return pd.DataFrame()
+
+        monkeypatch.setattr(ev.yf, "Ticker", FakeTicker)
+        monkeypatch.setattr(ev.time, "sleep", lambda *_: None)
+        ev._clear_bar_cache()
+
+        bars = ev._fetch_bars("KRAS", datetime(2026, 8, 28, tzinfo=timezone.utc),
+                              datetime(2026, 8, 31, tzinfo=timezone.utc))
+
+        assert bars is None
+        assert len(calls) == ev._FETCH_ATTEMPTS

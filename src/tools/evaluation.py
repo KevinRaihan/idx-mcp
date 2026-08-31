@@ -32,7 +32,7 @@ import pandas as pd
 import yfinance as yf
 
 from ..utils.formatting import safe_round
-from ..utils.ohlcv import drop_incomplete_bars
+from ..utils.ohlcv import drop_incomplete_bars, drop_unsettled_session
 from ..utils.paths import predictions_log_file
 from ..utils.ticker import to_yfinance_ticker
 from .predictions import (
@@ -129,12 +129,24 @@ def _fetch_bars(ticker: str, start: datetime, end: datetime) -> pd.DataFrame | N
             logger.debug("bar fetch failed for %s (attempt %d): %s", ticker, attempt + 1, e)
             hist = None
 
-        hist = drop_incomplete_bars(hist) if hist is not None else None
-        if hist is not None and not hist.empty:
-            result = hist
-            break
-        if attempt < _FETCH_ATTEMPTS - 1:
-            time.sleep(_FETCH_BACKOFF_S * (attempt + 1))
+        if hist is None or hist.empty:
+            # Nothing came back at all: a real failure, worth another attempt.
+            if attempt < _FETCH_ATTEMPTS - 1:
+                time.sleep(_FETCH_BACKOFF_S * (attempt + 1))
+            continue
+
+        # Two filters, both required. drop_incomplete_bars removes the pre-open
+        # placeholder (NaN close); drop_unsettled_session removes the live
+        # session, whose High/Low are still running extremes. Scoring against
+        # those resolves an outcome early and optimistically -- the same bias
+        # the same-bar rule exists to prevent.
+        #
+        # Filtering everything away is a legitimate answer, not a failure: it
+        # means no session has settled since the thesis was logged. Return the
+        # empty frame rather than None so the caller reports `pending` instead
+        # of `no_data`, and do not burn retries on it.
+        result = drop_unsettled_session(drop_incomplete_bars(hist))
+        break
 
     _bar_cache[key] = result
     return result
