@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from src import server
+
 from src.tools.golden_cross import scan_golden_cross
 from src.tools.mean_reversion import scan_mean_reversion
 from src.tools.predictions import gather_intelligence
@@ -258,10 +260,13 @@ def test_server_completes_a_real_stdio_session():
     ])
 
     assert init["result"]["serverInfo"]["name"] == "idx-mcp"
-    assert init["result"]["serverInfo"]["version"] == "1.4.0"
+    # Pinning the literal here went stale on every version bump and only failed
+    # in the live suite, long after the unit tests had gone green. What matters
+    # is that the running server reports the version the package declares.
+    assert init["result"]["serverInfo"]["version"] == server.__version__
 
     listed = tools["result"]["tools"]
-    assert len(listed) == 27
+    assert len(listed) == len(server.TOOLS)
     assert {t["name"] for t in listed} >= {
         "get_stock_price", "scan_mean_reversion",
         "scan_volatility_squeeze", "scan_volume_accumulation",
