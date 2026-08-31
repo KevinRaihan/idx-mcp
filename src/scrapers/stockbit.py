@@ -119,13 +119,41 @@ async def scrape_broker_summary(ticker: str) -> dict:
         if e["type"] in ("foreign", "domestic_institutional")
     )
 
+    # With no rows both sums are 0, and `0 > 0` is False -- which used to fall
+    # through to "distribution"/"selling". A failed scrape was therefore
+    # indistinguishable from a confidently bearish read of real broker data.
+    # A verdict is only emitted when there is something to base it on.
+    if not (top_buyers or top_sellers):
+        return {
+            "top_buyers": [],
+            "top_sellers": [],
+            "summary": {
+                "net_broker_flow": None,
+                "institutional_bias": None,
+                "foreign_broker_bias": None,
+                "data_available": False,
+                "note": (
+                    "no broker rows could be parsed; Stockbit returned nothing usable "
+                    "for this ticker. This is an absence of data, not a bearish signal."
+                ),
+            },
+        }
+
+    def _bias(net: float, positive: str, negative: str) -> str:
+        if net > 0:
+            return positive
+        if net < 0:
+            return negative
+        return "balanced"
+
     return {
         "top_buyers": top_buyers,
         "top_sellers": top_sellers,
         "summary": {
-            "net_broker_flow": "accumulation" if institutional_net > 0 else "distribution",
-            "institutional_bias": "buying" if institutional_net > 0 else "selling",
-            "foreign_broker_bias": "buying" if foreign_net > 0 else "selling",
+            "net_broker_flow": _bias(institutional_net, "accumulation", "distribution"),
+            "institutional_bias": _bias(institutional_net, "buying", "selling"),
+            "foreign_broker_bias": _bias(foreign_net, "buying", "selling"),
+            "data_available": True,
         },
     }
 
@@ -179,10 +207,14 @@ async def scrape_foreign_flow(ticker: str | None = None) -> dict:
     if foreign_net == 0 and (foreign_buy or foreign_sell):
         foreign_net = foreign_buy - foreign_sell
 
+    # Nothing parsed leaves all three at their 0 initialisers, which reads
+    # downstream as a measured net of zero. "Neutral flow" and "we could not
+    # read the page" are not the same claim.
     return {
         "foreign_buy_idr": foreign_buy,
         "foreign_sell_idr": foreign_sell,
         "foreign_net_idr": foreign_net,
+        "data_available": bool(foreign_buy or foreign_sell or foreign_net),
     }
 
 

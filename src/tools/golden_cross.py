@@ -147,6 +147,27 @@ def _days_since_golden_cross(df: pd.DataFrame) -> int | None:
     return len(df) - 1 - last_cross_pos
 
 
+def _cross_age(df: pd.DataFrame, days_since: int | None, confirmed: bool) -> str:
+    """Say *why* days_since_cross is null, which the value alone cannot.
+
+    The crossover can only be seen where both SMAs exist, so on a 1y fetch the
+    detectable window is roughly 52 sessions, not 252. A stock whose SMA50 has
+    been above its SMA200 for a year is `confirmed` with no event in view, and
+    reporting a bare null there is indistinguishable from a stock that never
+    crossed at all -- opposite situations. DMAS on 2026-08-31 was the first
+    case: confirmed true, days_since_cross null.
+    """
+    if days_since is not None:
+        return "measured"
+    return "older_than_lookback" if confirmed else "no_cross_in_lookback"
+
+
+def _detectable_cross_sessions(df: pd.DataFrame) -> int:
+    """Sessions in which a crossover could have been observed at all."""
+    both = df["SMA50"].notna() & df["SMA200"].notna()
+    return int(both.sum())
+
+
 def _stoch_momentum_bullish(df: pd.DataFrame, stoch_thresh: float) -> bool:
     """%K >= %D at latest bar, OR K>D cross occurred within last few sessions
     while %D was still in oversold territory at that time (not a falling knife).
@@ -349,6 +370,7 @@ def _build_gc_signal(
         "close":                   close,
         "golden_cross_confirmed":  True,
         "days_since_golden_cross": days_since_cross,
+        "cross_age":               _cross_age(df, days_since_cross, True),
         "fresh_golden_cross":      (
             days_since_cross is not None and days_since_cross <= FRESH_CROSS_DAYS
         ),
@@ -707,6 +729,11 @@ def _analyze_single(normalized: str, period: str) -> dict:
             "sma50":            safe_round(sma50, 0),
             "sma200":           safe_round(sma200, 0),
             "days_since_cross": days_since_cross,
+            "cross_age":        _cross_age(
+                enriched, days_since_cross,
+                sma50 is not None and sma200 is not None and sma50 > sma200,
+            ),
+            "detectable_cross_sessions": _detectable_cross_sessions(enriched),
             "fresh":            (
                 days_since_cross is not None and days_since_cross <= FRESH_CROSS_DAYS
             ),

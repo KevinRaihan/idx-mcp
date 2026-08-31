@@ -61,6 +61,7 @@ async def get_foreign_flow(ticker: str | None = None, period: str = "daily") -> 
             "suggestion": "Try again later. The data source may be temporarily unavailable.",
         }
 
+    available = data.get("data_available", False)
     foreign_buy  = data.get("foreign_buy_idr",  0)
     foreign_sell = data.get("foreign_sell_idr", 0)
     foreign_net  = data.get("foreign_net_idr",  0)
@@ -70,11 +71,15 @@ async def get_foreign_flow(ticker: str | None = None, period: str = "daily") -> 
         "ticker":               cache_key,
         "period":               period,
         "date":                 now_wib().strftime("%Y-%m-%d"),
-        "foreign_buy_idr":      foreign_buy,
-        "foreign_sell_idr":     foreign_sell,
-        "foreign_net_idr":      foreign_net,
-        "foreign_net_formatted": format_net_flow(foreign_net),
-        "foreign_net_lot":      foreign_net_lot,
+        "data_available":       available,
+        # Nothing scraped leaves the counters at 0, which formatted as
+        # "IDR 0 (neutral)" -- an unmeasured value presented as a measurement.
+        # Report null instead, and say why.
+        "foreign_buy_idr":      foreign_buy if available else None,
+        "foreign_sell_idr":     foreign_sell if available else None,
+        "foreign_net_idr":      foreign_net if available else None,
+        "foreign_net_formatted": format_net_flow(foreign_net) if available else None,
+        "foreign_net_lot":      foreign_net_lot if available else None,
         "trend": {
             "5d_cumulative_net_idr":  None,
             "20d_cumulative_net_idr": None,
@@ -83,6 +88,11 @@ async def get_foreign_flow(ticker: str | None = None, period: str = "daily") -> 
         "source":      "stockbit.com (scraped)",
         "scrape_note": "Data may be delayed. Cumulative trend requires historical scraping.",
     }
+    if not available:
+        result["unavailable_reason"] = (
+            "no foreign flow figures could be parsed from Stockbit for this "
+            "symbol; this is missing data, not a reading of zero net flow"
+        )
 
     cache.set("get_foreign_flow", cache_key, result, TTLCache.TTL_FLOW, {"period": period})
     return result

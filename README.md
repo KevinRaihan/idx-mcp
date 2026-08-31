@@ -2,7 +2,7 @@
 
 A local MCP (Model Context Protocol) server that provides Indonesian Stock Exchange (IDX) data to Claude Code and Claude Desktop. Exposes **27 tools** returning structured JSON for stock prices, financials, technicals, broker flow, market-wide strategy scans, and trade-thesis evaluation.
 
-**Version 1.4.1** — unified 2-step workflow, a ten-strategy scanner ensemble over one shared universe fetch, and a forward test that scores its own logged theses.
+**Version 1.5.0** — unified 2-step workflow, a ten-strategy scanner ensemble over one shared universe fetch, and a forward test that scores its own logged theses.
 
 ## Architecture
 
@@ -247,6 +247,43 @@ one tick collapses onto a single price and is rejected rather than snapped.
 `calibration_gap` is `mean_predicted_win_prob - realized_win_rate`. Positive means
 the logged theses were optimistic about themselves. It is reported per strategy,
 which is the point: it says which scans deserve to be trusted.
+
+## A payload never asserts what its inputs cannot support
+
+Three separate bugs shared one shape: a default value flowing into a field that
+reads as a measurement.
+
+* `get_broker_summary` computed `institutional_net = sum(rows)`. With no rows
+  that is `0`, and `0 > 0` is false, so a failed scrape fell through to
+  `"distribution"` / `"selling"` — a confidently bearish read of nothing at all.
+  A verdict now requires rows, a genuinely balanced book reads `"balanced"`
+  rather than distribution, and `data_available` says which case you are in.
+* `get_foreign_flow` initialised its counters to `0` and formatted them as
+  `"IDR 0 (neutral)"`. Unmeasured is not neutral; those fields are now null with
+  an `unavailable_reason`.
+* `get_company_profile` read `Ticker.major_holders` positionally, taking
+  `row.iloc[1]` as a shareholder name — a column that does not exist — so every
+  entry was `{"name": "N/A"}`. `institutionsCount` was reported as a percentage,
+  putting "90.0" beside real 0.85% figures, and the four junk rows evicted the
+  genuine institutional holders from the top-5 slice. Labels are now read into
+  named fields under `ownership_breakdown`, and an unrecognised shape yields
+  missing fields rather than wrong ones.
+
+Two related fixes remove ambiguity rather than fabrication:
+
+* `dividend_yield_pct` multiplied by 100 unconditionally. yfinance changed that
+  field from a fraction to a percentage, so ISAT reported 439% and DMAS 829%.
+  The value alone cannot be disambiguated inside `[0, 1]`, so the yield is now
+  derived from the dividend rate and price where possible; the scale heuristic
+  is a labelled fallback, and an implausible result is dropped.
+* `roic_pct` on the quarterly report is a single period's return and is not
+  comparable to the annual figure. The column may be a quarter or a half, so
+  multiplying blindly would invent the difference — it carries a `roic_basis`
+  instead.
+* `days_since_cross` is null both when a stock never crossed and when it crossed
+  before the lookback began — opposite situations. `cross_age` distinguishes
+  them, and `detectable_cross_sessions` reports how narrow the window really is
+  (43 sessions on a 1y fetch, since SMA200 needs 200 bars first).
 
 ## Trade levels are required
 

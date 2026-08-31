@@ -152,8 +152,7 @@ async def get_financials(ticker: str, period: str = "annual") -> dict:
     ps         = _coerce(info.get("priceToSalesTrailing12Months"))
     ev_ebitda  = _coerce(info.get("enterpriseToEbitda"))
     peg        = _coerce(info.get("pegRatio"))
-    div_yield  = _coerce(info.get("dividendYield"))
-    div_yield_pct = safe_round(div_yield * 100, 2) if div_yield else None
+    div_yield_pct, div_basis = dividend_yield_pct(info)
 
     # ── Profitability ─────────────────────────────────────────────────────────
     roe    = _coerce(info.get("returnOnEquity"))
@@ -161,11 +160,22 @@ async def get_financials(ticker: str, period: str = "annual") -> dict:
     roe_pct = safe_round(roe * 100, 2) if roe else None
     roa_pct = safe_round(roa * 100, 2) if roa else None
 
+    # ROE and ROA come from `info` and are TTM-based, so they read the same on
+    # both periods. ROIC is computed here from the statement column, so on the
+    # quarterly report it is a single period's return -- not comparable to the
+    # annual figure, and not annualised, because the column may be a quarter or
+    # a half and multiplying blindly would invent the difference. Labelled
+    # instead of adjusted.
     roic = None
     if operating_income and total_debt is not None and total_equity is not None:
         ic = total_debt + total_equity
         if ic != 0:
             roic = safe_round((operating_income / ic) * 100, 2)
+    roic_basis = (
+        None if roic is None
+        else "annual" if period == "annual"
+        else "reporting_period_not_annualized"
+    )
 
     # ── Cash flow ─────────────────────────────────────────────────────────────
     def _cf(key):
@@ -212,11 +222,13 @@ async def get_financials(ticker: str, period: str = "annual") -> dict:
             "ev_ebitda":        safe_round(ev_ebitda, 2),
             "peg":              safe_round(peg, 2),
             "dividend_yield_pct": div_yield_pct,
+            "dividend_yield_basis": div_basis,
         },
         "profitability": {
             "roe_pct":  roe_pct,
             "roa_pct":  roa_pct,
             "roic_pct": roic,
+            "roic_basis": roic_basis,
         },
         "cash_flow": {
             "operating_cash_flow": op_cf,
@@ -243,3 +255,35 @@ def _coerce(val) -> float | None:
         return None if math.isnan(f) or math.isinf(f) else f
     except (TypeError, ValueError):
         return None
+
+
+# Yields above this are not real on IDX; a value that high means the source
+# field was misread, so it is dropped rather than reported.
+MAX_PLAUSIBLE_YIELD_PCT = 30.0
+
+
+def dividend_yield_pct(info: dict) -> tuple[float | None, str | None]:
+    """Dividend yield as a percentage, plus how it was arrived at.
+
+    yfinance changed the scale of ``dividendYield`` between versions: it used to
+    be a fraction (0.0439) and now returns a percentage (4.39). Multiplying by
+    100 unconditionally reported ISAT at 439% and DMAS at 829%.
+
+    The field alone cannot be disambiguated inside [0, 1] -- 0.8 is either a
+    0.8% yield or an 80% one -- so the rate and price are used where available,
+    which needs no inference at all. The heuristic is only a fallback, and it
+    says so in the returned basis.
+    """
+    rate = _coerce(info.get("trailingAnnualDividendRate"))
+    spot = _coerce(info.get("currentPrice")) or _coerce(info.get("regularMarketPrice"))
+    if rate and spot:
+        return safe_round(rate / spot * 100, 2), "trailing_dividend_rate_over_price"
+
+    raw = _coerce(info.get("dividendYield"))
+    if not raw:
+        return None, None
+
+    pct = safe_round(raw * 100 if raw < 1 else raw, 2)
+    if pct is not None and pct > MAX_PLAUSIBLE_YIELD_PCT:
+        return None, "implausible_value_discarded"
+    return pct, "dividend_yield_field_scale_inferred"

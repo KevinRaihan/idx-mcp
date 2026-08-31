@@ -137,19 +137,14 @@ async def _fetch_profile(normalized: str) -> dict:
 
     major_shareholders: list[dict] = []
 
-    # Parse major holders
-    try:
-        if major_holders_raw is not None and not major_holders_raw.empty:
-            for _, row in major_holders_raw.iterrows():
-                try:
-                    major_shareholders.append({
-                        "name": str(row.iloc[1]) if len(row) > 1 else "N/A",
-                        "pct":  _pct_str(row.iloc[0]),
-                    })
-                except (ValueError, IndexError):
-                    continue
-    except Exception:
-        pass
+    # `Ticker.major_holders` is not a list of shareholders. yfinance returns four
+    # labelled aggregates in a single-column frame, and the positional read took
+    # row.iloc[1] as a name -- a column that does not exist -- so every entry
+    # came back as {"name": "N/A"}. Worse, institutionsCount is a count that was
+    # reported as a percentage: ISAT showed a holder at "90.0" that was really
+    # 90 institutions, sitting in the same list as genuine 0.85% figures. Read
+    # the labels into named fields instead.
+    ownership_breakdown = _parse_major_holders(major_holders_raw)
 
     # Parse institutional holders
     try:
@@ -203,6 +198,7 @@ async def _fetch_profile(normalized: str) -> dict:
         "description":   description[:500] if description else None,
         "ownership": {
             "major_shareholders":    major_shareholders[:5],
+            "ownership_breakdown":   ownership_breakdown or None,
             "conglomerate_group":    conglomerate,
             "is_bumn":               is_bumn,
             "government_stake_pct":  bumn_info.get("government_stake_pct") if is_bumn else None,
@@ -226,6 +222,42 @@ async def _safe_scrape_idx(ticker: str) -> dict:
         return await scrape_company_profile(ticker) or {}
     except Exception:
         return {}
+
+
+_HOLDER_FIELDS = {
+    "insiderspercentheld":          ("insiders_pct", True),
+    "institutionspercentheld":      ("institutions_pct", True),
+    "institutionsfloatpercentheld": ("institutions_float_pct", True),
+    "institutionscount":            ("institutions_count", False),
+}
+
+
+def _parse_major_holders(raw) -> dict:
+    """Read yfinance's labelled ownership aggregates into named fields.
+
+    Percentages arrive as fractions and are scaled; ``institutionsCount`` is a
+    count and is left alone. Unrecognised labels are skipped rather than
+    guessed at, so a further change in yfinance's shape yields missing fields
+    instead of mislabelled numbers.
+    """
+    out: dict = {}
+    if raw is None or getattr(raw, "empty", True):
+        return out
+    try:
+        col = raw.columns[0]
+        for label, value in raw[col].items():
+            key = str(label).strip().lower().replace(" ", "").replace("_", "")
+            field = _HOLDER_FIELDS.get(key)
+            if field is None:
+                continue
+            name, is_pct = field
+            number = _pct_str(value)
+            if number is None:
+                continue
+            out[name] = round(number * 100, 2) if is_pct else int(number)
+    except Exception:
+        return out
+    return out
 
 
 def _pct_str(val) -> float | None:

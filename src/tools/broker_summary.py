@@ -66,6 +66,7 @@ async def get_broker_summary(ticker: str) -> dict:
         "top_buyers":   data.get("top_buyers", []),
         "top_sellers":  data.get("top_sellers", []),
         "summary":      data.get("summary", {}),
+        "data_available": bool(data.get("summary", {}).get("data_available")),
         "broker_type_map": BROKER_TYPE_MAP,
         "source":       "stockbit.com (scraped)",
         "scrape_note":  "Data may be delayed or unavailable if Stockbit changes page structure",
