@@ -7,6 +7,7 @@ import math
 import yfinance as yf
 
 from ..utils.cache import TTLCache, cache
+from ..utils.completeness import mark_partial
 from ..utils.formatting import format_idr, safe_pct, safe_round
 from ..utils.ticker import to_yfinance_ticker, validate_ticker
 
@@ -242,6 +243,14 @@ async def get_financials(ticker: str, period: str = "annual") -> dict:
         ),
     }
 
+    mark_partial(
+        result,
+        ("income_statement.revenue", "income_statement.net_income",
+         "valuation.pe_ttm", "profitability.roe_pct",
+         "cash_flow.operating_cash_flow", "cash_flow.free_cash_flow"),
+        "Yahoo did not return every statement line for this ticker. A ratio "
+        "derived from a missing line is absent rather than zero.",
+    )
     cache.set("get_financials", normalized, result, TTLCache.TTL_FUNDAMENTALS, {"period": period})
     return result
 

@@ -2,7 +2,7 @@
 
 A local MCP (Model Context Protocol) server that provides Indonesian Stock Exchange (IDX) data to Claude Code and Claude Desktop. Exposes **27 tools** returning structured JSON for stock prices, financials, technicals, broker flow, market-wide strategy scans, and trade-thesis evaluation.
 
-**Version 1.6.0** — unified 2-step workflow, a ten-strategy scanner ensemble over one shared universe fetch, and a forward test that scores its own logged theses.
+**Version 1.7.0** — unified 2-step workflow, a ten-strategy scanner ensemble over one shared universe fetch, and a forward test that scores its own logged theses.
 
 ## Architecture
 
@@ -288,6 +288,32 @@ one tick collapses onto a single price and is rejected rather than snapped.
 `calibration_gap` is `mean_predicted_win_prob - realized_win_rate`. Positive means
 the logged theses were optimistic about themselves. It is reported per strategy,
 which is the point: it says which scans deserve to be trusted.
+
+## Saying what a number is, and what is missing
+
+`confidence_score` is a hand-weighted sum. A bare field called "confidence"
+reads as a probability, so every scan envelope now carries
+`score_basis: "heuristic_ranking_not_probability"` and a note saying it ranks
+candidates *within one scan*, is not calibrated, and is not comparable across
+strategies. `run_backtest` is where a base rate comes from.
+
+The truncated `signals` alias is gone. A key named `signals` sitting beside
+`signals_found: 134` while holding ten rows caused a real misread — a stock was
+reported as unflagged by a risk scan when it had merely been cut off. Use
+`all_signals`.
+
+`get_stock_price` already reported `partial` and `missing_fields`;
+`get_market_overview`, `get_financials` and `get_company_profile` now do too,
+via a shared helper. A full-shaped payload with nulls scattered through it looks
+like a successful call: `sector_performance: []` reads as "no sector moved" when
+it means the scrape failed. Empty containers count as missing; a value of `0` or
+`false` does not, because those are answers.
+
+`evaluate_predictions` also reports `exposure` — open positions by ticker, and
+which tickers are held more than once. The first forward-test read had AKRA
+logged twice under different strategies, and those two entries supplied 86% of
+all realised P&L while presenting as two independent wins. One bet logged twice
+has perfectly correlated outcomes and is one piece of evidence, not two.
 
 ## A payload never asserts what its inputs cannot support
 

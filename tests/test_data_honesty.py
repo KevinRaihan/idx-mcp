@@ -12,6 +12,7 @@ from src.scrapers.stockbit import scrape_broker_summary  # noqa: F401  (import g
 from src.tools.company_profile import _parse_major_holders
 from src.tools.financials import dividend_yield_pct
 from src.tools.golden_cross import _cross_age
+from src.utils.completeness import mark_partial
 
 
 class TestBrokerVerdictNeedsRows:
@@ -167,3 +168,55 @@ class TestDividendYieldScaling:
         })
         assert pct == pytest.approx(8.29, abs=0.01)
         assert basis == "trailing_dividend_rate_over_price"
+
+
+class TestPartialFlagging:
+    def test_a_populated_payload_is_not_partial(self):
+        p = mark_partial({"a": 1, "n": {"b": 2}}, ("a", "n.b"), "r")
+        assert p["partial"] is False
+        assert "missing_fields" not in p
+        assert "partial_reason" not in p
+
+    def test_zero_and_false_are_answers_not_absences(self):
+        """A rate of 0.0 is a measurement; conflating it with missing is the bug."""
+        p = mark_partial({"z": 0, "f": False, "s": 0.0}, ("z", "f", "s"), "r")
+        assert p["partial"] is False
+
+    def test_empty_containers_count_as_missing(self):
+        """`sector_performance: []` means the source did not answer."""
+        p = mark_partial({"lst": [], "dct": {}, "txt": ""}, ("lst", "dct", "txt"), "r")
+        assert p["partial"] is True
+        assert set(p["missing_fields"]) == {"lst", "dct", "txt"}
+
+    def test_null_and_absent_paths_are_both_missing(self):
+        p = mark_partial({"a": None}, ("a", "nope", "deep.path"), "why")
+        assert set(p["missing_fields"]) == {"a", "nope", "deep.path"}
+        assert p["partial_reason"] == "why"
+
+    def test_nested_paths_resolve(self):
+        payload = {"macro": {"usd_idr": 17_698.0, "bi_rate_pct": None}}
+        p = mark_partial(payload, ("macro.usd_idr", "macro.bi_rate_pct"), "r")
+        assert p["missing_fields"] == ["macro.bi_rate_pct"]
+
+
+class TestScoreBasisIsDeclared:
+    def test_every_scan_envelope_says_what_its_score_is(self):
+        from src.tools._scan_common import SCORE_BASIS, build_envelope
+
+        env = build_envelope(
+            strategy="s", signals=[], total_scanned=1, downloaded=1, failed=0,
+            filters={}, elapsed_s=0.1,
+        )
+        assert env["score_basis"] == SCORE_BASIS
+        assert "not a calibrated probability" in env["score_note"]
+
+    def test_the_truncated_signals_alias_is_gone(self):
+        from src.tools._scan_common import build_envelope
+
+        env = build_envelope(
+            strategy="s", signals=[{"ticker": f"T{i}"} for i in range(30)],
+            total_scanned=30, downloaded=30, failed=0, filters={}, elapsed_s=0.1,
+        )
+        assert "signals" not in env
+        assert len(env["top_10"]) == 10
+        assert len(env["all_signals"]) == env["signals_found"] == 30

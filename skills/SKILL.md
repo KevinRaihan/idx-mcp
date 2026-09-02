@@ -82,7 +82,7 @@ array sorted by `confidence_score`, and an `all_signals` array holding EVERY sig
 - Use `top_10` to present candidates.
 - Use `all_signals` to ask "is ticker X in this list?" — `top_10` cannot answer that for
   anything ranked 11th or worse, and `scan_distribution_warning` routinely flags 45+.
-  `signals` is a deprecated alias of `top_10`; never treat it as the complete set.
+  `top_10` is the ranked head. Use `all_signals` for the complete set — it matches `signals_found`.
 
 **Zero signals is a valid answer** — report it as a market condition rather than retrying.
 Before loosening anything, read `filter_funnel`: per-stage survivor counts, present on

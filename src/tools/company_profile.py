@@ -11,6 +11,7 @@ import yfinance as yf
 
 from ..scrapers.idx import scrape_company_profile
 from ..utils.cache import TTLCache, cache
+from ..utils.completeness import mark_partial
 from ..utils.ticker import to_yfinance_ticker, validate_ticker
 
 logger = logging.getLogger("idx-mcp.tools.company_profile")
@@ -186,7 +187,7 @@ async def _fetch_profile(normalized: str) -> dict:
     if isinstance(listing_date, (int, float)) and not math.isnan(float(listing_date)):
         listing_date = datetime.fromtimestamp(int(listing_date), tz=timezone.utc).strftime("%Y-%m-%d")
 
-    return {
+    profile = {
         "ticker":        normalized,
         "name":          name,
         "sector_jasica": idx_data.get("sector") or sector,
@@ -215,6 +216,13 @@ async def _fetch_profile(normalized: str) -> dict:
         },
         "source": "yfinance + idx.co.id (scraped)",
     }
+    return mark_partial(
+        profile,
+        ("sector_jasica", "employees", "ownership.free_float_pct",
+         "ownership.major_shareholders", "ownership.ownership_breakdown"),
+        "Parts of this profile come from idx.co.id, which returns 403 to "
+        "unattended clients; those fields are unavailable rather than empty.",
+    )
 
 
 async def _safe_scrape_idx(ticker: str) -> dict:

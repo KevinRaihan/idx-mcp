@@ -38,6 +38,14 @@ class Funnel:
     def to_dict(self) -> dict[str, int]:
         return dict(self._counts)
 
+#: What confidence_score actually is, emitted on every scan envelope.
+SCORE_BASIS = 'heuristic_ranking_not_probability'
+SCORE_NOTE = (
+    "confidence_score ranks candidates within this scan only. It is a "
+    "hand-weighted heuristic, not a calibrated probability and not comparable "
+    "across strategies. Use run_backtest for a base rate."
+)
+
 DISCLAIMER = (
     "This output is for educational and analytical purposes only. "
     "Not financial advice. Trading decisions remain the user's full responsibility."
@@ -58,8 +66,11 @@ def build_envelope(
 ) -> dict:
     """Assemble the standard scan response.
 
-    ``top_10`` is kept as the primary key for backwards compatibility with the
-    existing skill templates; ``signals`` is its alias.
+    ``top_10`` is the ranked head of the list. The ``signals`` alias it used to
+    carry is gone: a key named ``signals`` sitting beside ``signals_found: 134``
+    but holding 10 rows is a trap, and it caused a real misread -- a ticker was
+    reported as unflagged by a risk scan when it had simply been truncated away.
+    Use ``all_signals`` for the complete set.
 
     ``all_signals`` carries every signal, matching ``signals_found``. Without it
     a scan reporting 134 flags handed back only 10 rows under a key named
@@ -80,10 +91,12 @@ def build_envelope(
         "tickers_without_data": failed,
         "signals_found": len(signals),
         "filters_applied": filters,
+        # confidence_score is a hand-weighted ranking, and a bare number called
+        # "confidence" reads as a probability. Saying what it is not is cheaper
+        # than someone position-sizing off it.
+        "score_basis": SCORE_BASIS,
+        "score_note": SCORE_NOTE,
         "top_10": top,
-        # Alias of top_10, kept for the existing skill templates. Use
-        # all_signals when you need the complete set — this one is capped.
-        "signals": top,
         "all_signals": signals,
         "disclaimer": DISCLAIMER,
     }

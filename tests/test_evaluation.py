@@ -467,3 +467,46 @@ class TestFetchDistinguishesEmptyFromFailed:
 
         assert bars is None
         assert len(calls) == ev._FETCH_ATTEMPTS
+
+
+class TestExposure:
+    """Concentration is invisible in a per-thesis list."""
+
+    def test_a_ticker_logged_twice_is_flagged_as_one_bet(self):
+        scored = [
+            {"ticker": "AKRA", "outcome": "open", "strategy": "scan_golden_cross",
+             "position_value_idr": 10_000_000},
+            {"ticker": "AKRA", "outcome": "open", "strategy": "scan_trend_pullback",
+             "position_value_idr": 10_000_000},
+            {"ticker": "BBCA", "outcome": "open", "strategy": "scan_golden_cross",
+             "position_value_idr": 10_000_000},
+        ]
+        e = ev._exposure(scored)
+        assert e["open_positions"] == 3
+        assert e["distinct_tickers"] == 2
+        assert e["tickers_held_more_than_once"] == ["AKRA"]
+        assert e["by_ticker"]["AKRA"]["pct_of_open"] == pytest.approx(66.7, abs=0.1)
+        assert "not two independent ones" in e["note"]
+
+    def test_decided_and_pending_rows_are_not_exposure(self):
+        scored = [
+            {"ticker": "A", "outcome": "hit_target", "position_value_idr": 9},
+            {"ticker": "B", "outcome": "pending", "position_value_idr": 9},
+            {"ticker": "C", "outcome": "open", "position_value_idr": 9},
+        ]
+        e = ev._exposure(scored)
+        assert e["open_positions"] == 1
+        assert list(e["by_ticker"]) == ["C"]
+
+    def test_no_open_positions_yields_no_duplicate_note(self):
+        e = ev._exposure([])
+        assert e["open_positions"] == 0
+        assert e["largest_ticker_pct"] is None
+        assert e["note"] is None
+
+    def test_by_ticker_is_ranked_by_value(self):
+        scored = [
+            {"ticker": "SMALL", "outcome": "open", "position_value_idr": 1_000_000},
+            {"ticker": "BIG", "outcome": "open", "position_value_idr": 50_000_000},
+        ]
+        assert list(ev._exposure(scored)["by_ticker"]) == ["BIG", "SMALL"]

@@ -201,7 +201,10 @@ def test_envelope_reports_counts_and_truncates_to_top_n():
     )
     assert env["signals_found"] == 25
     assert len(env["top_10"]) == 10
-    assert env["top_10"] == env["signals"]
+    assert "signals" not in env, (
+        "the truncated `signals` alias is gone; it read as the complete set "
+        "while holding only the top 10"
+    )
     assert env["universe_size"] == 178
     assert env["tickers_without_data"] == 9
     assert env["elapsed_seconds"] == 12.3

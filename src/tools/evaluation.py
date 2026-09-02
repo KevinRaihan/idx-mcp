@@ -307,6 +307,52 @@ def _summarise(scored: list[dict]) -> dict:
     return summary
 
 
+
+def _exposure(scored: list[dict]) -> dict:
+    """Where the still-open money actually sits.
+
+    A per-thesis list hides concentration. The first real forward-test read had
+    AKRA logged twice under different strategies, and the two entries supplied
+    86% of all realised P&L while reading as two independent wins -- so the same
+    stock on the same day was counted as two pieces of evidence. Exposure is
+    reported by ticker so that overlap is visible before it is acted on.
+    """
+    open_rows = [s for s in scored if s["outcome"] == "open"]
+    total = sum(float(s.get("position_value_idr") or 0) for s in open_rows)
+
+    by_ticker: dict[str, dict] = {}
+    for row in open_rows:
+        slot = by_ticker.setdefault(
+            row["ticker"], {"positions": 0, "value_idr": 0.0, "strategies": []}
+        )
+        slot["positions"] += 1
+        slot["value_idr"] += float(row.get("position_value_idr") or 0)
+        if row.get("strategy") and row["strategy"] not in slot["strategies"]:
+            slot["strategies"].append(row["strategy"])
+
+    for slot in by_ticker.values():
+        slot["value_idr"] = safe_round(slot["value_idr"], 0)
+        slot["pct_of_open"] = (
+            safe_round(slot["value_idr"] / total * 100, 1) if total else None
+        )
+
+    ranked = sorted(by_ticker.items(), key=lambda kv: -(kv[1]["value_idr"] or 0))
+    duplicated = [t for t, v in ranked if v["positions"] > 1]
+    return {
+        "open_positions": len(open_rows),
+        "distinct_tickers": len(by_ticker),
+        "total_open_value_idr": safe_round(total, 0) if total else 0,
+        "largest_ticker_pct": ranked[0][1]["pct_of_open"] if ranked else None,
+        "tickers_held_more_than_once": duplicated,
+        "by_ticker": dict(ranked),
+        "note": (
+            "A ticker appearing more than once is one bet logged twice, not two "
+            "independent ones; its outcomes are perfectly correlated and should "
+            "not be counted as separate evidence."
+        ) if duplicated else None,
+    }
+
+
 def _by_strategy(scored: list[dict]) -> dict:
     groups: dict[str, list[dict]] = {}
     for s in scored:
@@ -343,6 +389,9 @@ def _score_all(strategy: str | None, include_open: bool) -> dict:
             "ai_win_prob": raw.get("ai_win_prob"),
             "initial_ev_idr": raw.get("initial_ev"),
             "levels_source": raw.get("levels_source"),
+            # Carried through for the exposure view; without it every position
+            # sizes to zero and concentration cannot be seen.
+            "position_value_idr": raw.get("position_value_idr"),
         }
 
         entry = dict(raw)
@@ -421,6 +470,7 @@ def _score_all(strategy: str | None, include_open: bool) -> dict:
         "filter_strategy": strategy,
         "summary": _summarise(scored),
         "by_strategy": _by_strategy(scored),
+        "exposure": _exposure(scored),
         "predictions": visible,
         "interpretation": (
             "realized_win_rate counts only theses that reached their target or stop. "

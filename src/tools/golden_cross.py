@@ -46,6 +46,8 @@ from .scanner import (
 )
 from .universe import load_universe
 
+from ._scan_common import SCORE_BASIS, SCORE_NOTE
+
 logger = logging.getLogger("idx-mcp.tools.golden_cross")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -551,6 +553,8 @@ def _run_full_scan(
                 "sma_periods":      {"golden_cross": [50, 200]},
             },
             "filter_funnel":           funnel.to_dict(),
+            "score_basis":             SCORE_BASIS,
+            "score_note":              SCORE_NOTE,
         },
         "top_10":       top,
         "all_signals":  signals,

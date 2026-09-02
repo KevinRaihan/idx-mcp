@@ -24,6 +24,8 @@ from ..utils.ohlcv import drop_incomplete_bars
 from ..utils.ticker import validate_ticker
 from ..utils.time_utils import format_wib_iso, now_wib
 
+from ._scan_common import SCORE_BASIS, SCORE_NOTE
+
 logger = logging.getLogger("idx-mcp.tools.scanner")
 
 # ── Paths & constants ─────────────────────────────────────────────────────────
@@ -578,6 +580,8 @@ def _run_full_scan(
                 "ma_periods":     MA_PERIODS,
             },
             "filter_funnel":          funnel.to_dict(),
+            "score_basis":             SCORE_BASIS,
+            "score_note":              SCORE_NOTE,
         },
         "top_10":       top10,
         "all_signals":  signals,

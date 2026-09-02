@@ -8,6 +8,7 @@ import yfinance as yf
 
 from ..scrapers.idx import scrape_sector_indices
 from ..utils.cache import TTLCache, cache
+from ..utils.completeness import mark_partial
 from ..utils.formatting import safe_round
 from ..utils.time_utils import format_wib_iso, get_market_status
 
@@ -102,7 +103,14 @@ async def _build_overview(include_macro: bool) -> dict:
             "coal_newcastle_usd": None, "cpo_usd": None, "nickel_lme_usd": None, "gold_usd": None,
         }
 
-    return result
+    return mark_partial(
+        result,
+        ("ihsg.value", "ihsg.change_percent", "sector_performance",
+         "macro.usd_idr", "macro.bi_rate_pct", "macro.inflation_yoy_pct"),
+        "IHSG, sector or macro figures could not be scraped. An empty "
+        "sector_performance means the source did not answer, not that no sector "
+        "moved.",
+    )
 
 
 async def _safe_scrape_sectors() -> list:
