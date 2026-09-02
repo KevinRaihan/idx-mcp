@@ -2,7 +2,7 @@
 
 A local MCP (Model Context Protocol) server that provides Indonesian Stock Exchange (IDX) data to Claude Code and Claude Desktop. Exposes **27 tools** returning structured JSON for stock prices, financials, technicals, broker flow, market-wide strategy scans, and trade-thesis evaluation.
 
-**Version 1.5.0** — unified 2-step workflow, a ten-strategy scanner ensemble over one shared universe fetch, and a forward test that scores its own logged theses.
+**Version 1.6.0** — unified 2-step workflow, a ten-strategy scanner ensemble over one shared universe fetch, and a forward test that scores its own logged theses.
 
 ## Architecture
 
@@ -191,6 +191,47 @@ stays read-only and can be installed anywhere:
 | `~/.idx-mcp/logs/predictions_log.json` | Forward-testing thesis log |
 
 Set `IDX_MCP_HOME` to relocate both.
+
+## Base rates for every strategy
+
+`run_backtest` covered MA Ketat alone, so nine of the ten scans shipped with no
+evidence: they could produce a signal every day and nothing in the system could
+say whether that signal had ever been worth acting on. It now replays any or all
+of them.
+
+The constraint that shapes the design: a backtest must run **the same code the
+live scan runs**. Reimplementing each filter as a vectorised expression would be
+far faster, but it measures a strategy that is not the one in production, and
+the two drift apart silently the moment either is edited. So each strategy is
+replayed through its own `_build_signal` — the exact function the scanner calls
+— one session at a time.
+
+That is affordable because every indicator is causal (rolling and shift only),
+so indicators are computed once over the full history and the frame is *sliced*
+rather than recomputed. Slicing an acausal indicator would leak the future into
+every bar, so the property is asserted by a test that is itself checked against
+a deliberately leaky indicator. An earlier version of that test compared built
+signals and passed while proving nothing — a strategy that rarely fires returns
+`None` on both sides, and `None == None` is not evidence.
+
+Measurement is deliberately plain and identical across strategies: enter at the
+signal bar's close, exit at the close `horizon_days` later. No stops, no
+targets. That is what makes strategies comparable to each other; trade-level
+outcomes with real levels are what `evaluate_predictions` is for.
+
+Two details that decide whether the numbers mean anything:
+
+* **Direction.** A risk scan flags weakness, so a *fall* after the signal is the
+  strategy being right. `strategy_return_pct` is signed from the strategy's
+  point of view. Scoring `scan_distribution_warning` like a long entry would
+  report a working warning system as a failing one, and `scan_gap` reads its
+  direction off each individual signal.
+* **Sample size.** `n_signals` is reported next to every win rate because it is
+  the number that decides whether the win rate is worth reading. Under about 20
+  signals is an anecdote.
+
+A strategy whose warm-up exceeds the fetched history is reported as
+`not_evaluated` with what it needed, rather than as a truthful-looking zero.
 
 ## The forward test
 

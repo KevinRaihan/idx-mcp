@@ -21,6 +21,7 @@ try:
         evaluate_and_log_thesis
     )
     from .tools.evaluation import evaluate_predictions
+    from .tools.backtest import STRATEGY_NAMES, run_backtest_all
     from .tools.market_overview import get_market_overview
     from .tools.company_profile import get_company_profile
     from .tools.scanner import (
@@ -28,7 +29,6 @@ try:
         get_top10,
         analyze_ticker,
         get_prediction,
-        run_backtest,
         get_scan_summary,
     )
     from .tools.golden_cross import (
@@ -81,7 +81,7 @@ def _sanitize_nans(obj):
     return obj
 
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 
 
 class ToolArgumentError(ValueError):
@@ -458,9 +458,15 @@ TOOLS = [
     Tool(
         name="run_backtest",
         description=(
-            "Backtest the MA Ketat signal on a stock's historical data. "
-            "Finds all past MA Ketat trigger points and measures 7-day forward returns, "
-            "win rate, average return, and max drawdown."
+            "Backtest scan strategies on a stock's historical data. Replays each "
+            "strategy through the same signal builder the live scan uses, one "
+            "session at a time, and reports how often the signal was followed by "
+            "a move in the direction it predicted. Omit `strategy` to run all ten "
+            "and compare their base rates; pass one to get its numbers at the top "
+            "level. Entry is the signal bar's close, exit is the close "
+            "`horizon_days` later, with no stops or targets, so strategies stay "
+            "comparable. A risk scan is scored on price falling. Treat fewer than "
+            "~20 signals as an anecdote, not evidence."
         ),
         inputSchema={
             "type": "object",
@@ -469,11 +475,23 @@ TOOLS = [
                     "type": "string",
                     "description": "IDX ticker symbol",
                 },
+                "strategy": {
+                    "type": "string",
+                    "description": "Which scan to backtest. Omit to run all ten and compare.",
+                    "enum": list(STRATEGY_NAMES),
+                },
                 "period": {
                     "type": "string",
-                    "description": 'Historical lookback: "1y" (default) or "2y"',
-                    "enum": ["1y", "2y"],
-                    "default": "1y",
+                    "description": 'Historical lookback: "1y", "2y" (default) or "5y"',
+                    "enum": ["1y", "2y", "5y"],
+                    "default": "2y",
+                },
+                "horizon_days": {
+                    "type": "integer",
+                    "description": "Sessions held before the exit close (1-30, default 7)",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "default": 7,
                 },
                 "tick_threshold": {
                     "type": "number",
@@ -969,11 +987,16 @@ async def call_tool(name: str, arguments: dict | None) -> list[TextContent]:
                 arguments.get("horizon_days", 7),
             )
         elif name == "run_backtest":
-            result = await run_backtest(
-                _require(arguments, "ticker", name),
-                arguments.get("period", "1y"),
-                arguments.get("tick_threshold", 6.0),
-                arguments.get("vol_threshold", 3.8),
+            # Keyword args deliberately: this signature has grown twice now, and
+            # a positional call silently rebinds every argument after an
+            # inserted one.
+            result = await run_backtest_all(
+                ticker=_require(arguments, "ticker", name),
+                strategy=arguments.get("strategy"),
+                period=arguments.get("period", "2y"),
+                horizon_days=arguments.get("horizon_days", 7),
+                tick_threshold=arguments.get("tick_threshold", 6.0),
+                vol_threshold=arguments.get("vol_threshold", 3.8),
             )
         elif name == "get_scan_summary":
             result = await get_scan_summary()

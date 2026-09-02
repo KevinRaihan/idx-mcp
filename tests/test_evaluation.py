@@ -21,8 +21,24 @@ from src.utils.paths import predictions_log_file
 LEVELS = dict(entry_price=1_000.0, stop_loss=950.0, target_price=1_100.0)
 
 
+def after_log(days_ahead: int = 1) -> str:
+    """A date strictly later than a thesis logged right now.
+
+    Scoring starts the session *after* the log timestamp, so a bar meant to be
+    scoreable has to be in the future relative to whenever the suite runs.
+    Hardcoding one (these said "2026-09-01") silently turns into a past date
+    the moment the clock passes it, and the test then fails as `pending` for a
+    reason that has nothing to do with the code.
+    """
+    return (datetime.now(timezone.utc).date() + timedelta(days=days_ahead)).isoformat()
+
+
 def bars(rows, start="2026-08-03"):
-    """rows: list of (high, low, close)."""
+    """rows: list of (high, low, close).
+
+    The default start is deliberately in the past; pass ``after_log()`` for a
+    bar that must be scoreable.
+    """
     idx = pd.bdate_range(start=start, periods=len(rows))
     return pd.DataFrame(
         {
@@ -257,7 +273,7 @@ async def test_evaluate_scores_a_logged_thesis(monkeypatch):
     )
 
     monkeypatch.setattr(ev, "_fetch_bars",
-                        lambda t, s, e: bars([(1_120, 1_050, 1_110)], start="2026-09-01"))
+                        lambda t, s, e: bars([(1_120, 1_050, 1_110)], start=after_log()))
     r = await ev.evaluate_predictions()
 
     assert r["summary"]["logged"] == 1
@@ -273,7 +289,7 @@ async def test_evaluate_filters_by_strategy(monkeypatch):
     await log_prediction_snapshot("TLKM", 1.0, 0.5, "r", "2026-09-30", "beta_scan", **LEVELS)
 
     monkeypatch.setattr(ev, "_fetch_bars",
-                        lambda t, s, e: bars([(1_120, 1_050, 1_110)], start="2026-09-01"))
+                        lambda t, s, e: bars([(1_120, 1_050, 1_110)], start=after_log()))
     r = await ev.evaluate_predictions(strategy="alpha")
     assert r["summary"]["logged"] == 1
     assert r["predictions"][0]["ticker"] == "BBCA"
@@ -282,7 +298,7 @@ async def test_evaluate_filters_by_strategy(monkeypatch):
 async def test_include_open_false_hides_unresolved_rows_but_not_from_counts(monkeypatch):
     await log_prediction_snapshot("BBCA", 1.0, 0.5, "r", "2099-01-01", "s", **LEVELS)
     monkeypatch.setattr(ev, "_fetch_bars",
-                        lambda t, s, e: bars([(1_010, 990, 1_000)], start="2026-09-01"))
+                        lambda t, s, e: bars([(1_010, 990, 1_000)], start=after_log()))
 
     r = await ev.evaluate_predictions(include_open=False)
     assert r["predictions"] == []
