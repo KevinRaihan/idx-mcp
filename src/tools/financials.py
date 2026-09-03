@@ -8,7 +8,8 @@ import yfinance as yf
 
 from ..utils.cache import TTLCache, cache
 from ..utils.completeness import mark_partial
-from ..utils.formatting import format_idr, safe_pct, safe_round
+from ..utils.formatting import format_money, safe_pct, safe_round
+from ..utils.fx import fx_rate
 from ..utils.ticker import to_yfinance_ticker, validate_ticker
 
 logger = logging.getLogger("idx-mcp.tools.financials")
@@ -38,6 +39,40 @@ def _latest_col(df):
     if df is None or df.empty:
         return None
     return df.columns[0]
+
+
+#: Ratios Yahoo forms as (market value in the quote currency) / (statement value
+#: in financialCurrency). When an issuer reports in a currency it does not trade
+#: in, every one of these is off by exactly the FX rate. ``trailingPE`` is not
+#: here: Yahoo's trailing EPS is already in the quote currency.
+CURRENCY_MIXED_RATIOS = ("pe_forward", "pb", "ps", "ev_ebitda")
+
+
+def rescale_valuation(ratios: dict, info: dict) -> tuple[dict, str]:
+    """Convert currency-mixed valuation ratios into the quote currency.
+
+    Returns ``(ratios, basis)``. When the rate cannot be established the mixed
+    ratios are dropped rather than passed through: a price-to-book of 52,999 is
+    not a conservative reading of 3.00, it is a number that will be acted on.
+    ``peg`` goes with them — Yahoo does not say what it built it from, and here
+    its sibling ``forwardPE`` was 211,999.
+    """
+    reporting = (info.get("financialCurrency") or "").upper()
+    quote = (info.get("currency") or "").upper()
+    if not reporting or not quote or reporting == quote:
+        return ratios, "reported_currency_matches_quote_currency"
+
+    rate = fx_rate(reporting, quote)
+    if not rate:
+        for key in (*CURRENCY_MIXED_RATIOS, "peg"):
+            ratios[key] = None
+        return ratios, f"dropped_unconvertible_{reporting.lower()}_statements"
+
+    for key in CURRENCY_MIXED_RATIOS:
+        if ratios.get(key) is not None:
+            ratios[key] = ratios[key] / rate
+    ratios["peg"] = None
+    return ratios, f"rescaled_from_{reporting.lower()}_at_{rate:g}"
 
 
 async def get_financials(ticker: str, period: str = "annual") -> dict:
@@ -153,6 +188,17 @@ async def get_financials(ticker: str, period: str = "annual") -> dict:
     ps         = _coerce(info.get("priceToSalesTrailing12Months"))
     ev_ebitda  = _coerce(info.get("enterpriseToEbitda"))
     peg        = _coerce(info.get("pegRatio"))
+
+    # BUMI reports in USD and trades in IDR, so Yahoo returned pb=52999.996.
+    _v, valuation_basis = rescale_valuation(
+        {"pe_forward": pe_forward, "pb": pb, "ps": ps, "ev_ebitda": ev_ebitda, "peg": peg},
+        info,
+    )
+    pe_forward, pb, ps, ev_ebitda, peg = (
+        _v["pe_forward"], _v["pb"], _v["ps"], _v["ev_ebitda"], _v["peg"]
+    )
+    reporting_currency = (info.get("financialCurrency") or "").upper() or None
+
     div_yield_pct, div_basis = dividend_yield_pct(info)
 
     # ── Profitability ─────────────────────────────────────────────────────────
@@ -194,10 +240,11 @@ async def get_financials(ticker: str, period: str = "annual") -> dict:
         "period": period,
         "reporting_date": reporting_date,
         "income_statement": {
+            "reporting_currency": reporting_currency,
             "revenue": revenue,
-            "revenue_formatted": format_idr(revenue),
+            "revenue_formatted": format_money(revenue, reporting_currency),
             "net_income": net_income,
-            "net_income_formatted": format_idr(net_income),
+            "net_income_formatted": format_money(net_income, reporting_currency),
             "eps": eps,
             "revenue_growth_yoy_pct": revenue_growth,
             "net_income_growth_yoy_pct": net_income_growth,
@@ -208,6 +255,7 @@ async def get_financials(ticker: str, period: str = "annual") -> dict:
             "net_margin_pct":      safe_pct(net_income, revenue),
         },
         "balance_sheet": {
+            "reporting_currency":  reporting_currency,
             "total_assets":        total_assets,
             "total_debt":          total_debt,
             "total_equity":        total_equity,
@@ -222,6 +270,7 @@ async def get_financials(ticker: str, period: str = "annual") -> dict:
             "ps":               safe_round(ps, 2),
             "ev_ebitda":        safe_round(ev_ebitda, 2),
             "peg":              safe_round(peg, 2),
+            "valuation_basis":  valuation_basis,
             "dividend_yield_pct": div_yield_pct,
             "dividend_yield_basis": div_basis,
         },

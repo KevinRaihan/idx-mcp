@@ -311,3 +311,77 @@ class TestCrossFieldsSayWhichQuestionTheyAnswer:
         assert '"cross_basis":         "event_on_this_bar"' in src
         assert '"sma50_above_sma200":  sma50_above_sma200' in src
 
+
+class TestValuationRatiosAreInTheQuoteCurrency:
+    """Yahoo divides an IDR market value by a USD statement value for every
+    IDX issuer that reports in USD. BUMI on 2026-09-03: priceToBook 52999.996
+    against a real 3.00, from a 212 IDR price over a 0.004 USD book value."""
+
+    @staticmethod
+    def _rescale(ratios, reporting, quote, rate, monkeypatch):
+        from src.tools import financials as fin
+
+        monkeypatch.setattr(fin, "fx_rate", lambda f, t: rate)
+        return fin.rescale_valuation(
+            dict(ratios), {"financialCurrency": reporting, "currency": quote}
+        )
+
+    BUMI = {"pe_forward": 211999.98, "pb": 52999.996, "ps": 48787.7,
+            "ev_ebitda": 410790.53, "peg": 0.1}
+
+    def test_a_usd_reporter_is_rescaled_to_idr(self, monkeypatch):
+        out, basis = self._rescale(self.BUMI, "USD", "IDR", 17685.0, monkeypatch)
+        assert out["pb"] == pytest.approx(3.00, abs=0.01)
+        assert out["ps"] == pytest.approx(2.76, abs=0.01)
+        assert out["ev_ebitda"] == pytest.approx(23.23, abs=0.01)
+        assert basis == "rescaled_from_usd_at_17685"
+
+    def test_an_idr_reporter_is_left_alone(self, monkeypatch):
+        pristine = {"pe_forward": 7.0, "pb": 1.42, "ps": 1.1, "ev_ebitda": 4.2, "peg": 0.8}
+        out, basis = self._rescale(pristine, "IDR", "IDR", 1.0, monkeypatch)
+        assert out == pristine
+        assert basis == "reported_currency_matches_quote_currency"
+
+    def test_an_unavailable_rate_drops_the_ratios_rather_than_passing_them(self, monkeypatch):
+        """52,999 is not a conservative 3.00; it is a number that gets acted on."""
+        out, basis = self._rescale(self.BUMI, "USD", "IDR", None, monkeypatch)
+        assert all(out[k] is None for k in
+                   ("pe_forward", "pb", "ps", "ev_ebitda", "peg"))
+        assert basis == "dropped_unconvertible_usd_statements"
+
+    def test_peg_is_dropped_whenever_the_currencies_differ(self, monkeypatch):
+        """Yahoo does not say what it built peg from, and its sibling
+        forwardPE was 211,999 on the same payload."""
+        out, _ = self._rescale(self.BUMI, "USD", "IDR", 17685.0, monkeypatch)
+        assert out["peg"] is None
+
+    def test_trailing_pe_is_never_touched(self):
+        """Trailing EPS is already in the quote currency: 212 / 5.83 = 36.36."""
+        from src.tools.financials import CURRENCY_MIXED_RATIOS
+
+        assert "pe_ttm" not in CURRENCY_MIXED_RATIOS
+        assert "trailingPE" not in CURRENCY_MIXED_RATIOS
+
+    def test_a_missing_currency_field_changes_nothing(self, monkeypatch):
+        out, basis = self._rescale(self.BUMI, None, "IDR", 17685.0, monkeypatch)
+        assert out == self.BUMI
+        assert basis == "reported_currency_matches_quote_currency"
+
+
+class TestStatementsAreLabelledWithTheirCurrency:
+    def test_a_usd_revenue_is_not_rendered_as_idr(self):
+        from src.utils.formatting import format_money
+
+        assert format_money(1_424_767_199.0, "USD") == "USD 1.4B"
+        assert format_money(1_424_767_199.0, "IDR") == "IDR 1.4B"
+
+    def test_the_default_and_the_legacy_helper_still_say_idr(self):
+        from src.utils.formatting import format_idr, format_money
+
+        assert format_money(5_000_000_000) == "IDR 5.0B"
+        assert format_idr(5_000_000_000) == "IDR 5.0B"
+
+    def test_none_survives(self):
+        from src.utils.formatting import format_money
+
+        assert format_money(None, "USD") is None
