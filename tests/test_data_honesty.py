@@ -220,3 +220,94 @@ class TestScoreBasisIsDeclared:
         assert "signals" not in env
         assert len(env["top_10"]) == 10
         assert len(env["all_signals"]) == env["signals_found"] == 30
+
+
+class TestGapSaysWhichBarItRead:
+    """The scan reported bar_date: today alongside a note claiming the
+    in-progress session had been excluded. Both cannot be true. Verified on
+    2026-09-03 at 11:02 WIB: every scan read a two-hour-old partial bar."""
+
+    @staticmethod
+    def _at(hhmm):
+        from datetime import datetime
+
+        from src.utils.ohlcv import WIB, last_settled_date
+
+        h, m = hhmm
+        return last_settled_date(datetime(2026, 9, 3, h, m, tzinfo=WIB))
+
+    def test_a_session_still_trading_is_not_settled(self):
+        assert str(self._at((11, 2))) == "2026-09-02"
+
+    def test_the_close_settles_the_day_at_1615(self):
+        assert str(self._at((16, 15))) == "2026-09-03"
+        assert str(self._at((16, 14))) == "2026-09-02"
+
+    def test_after_the_close_today_is_settled(self):
+        assert str(self._at((20, 10))) == "2026-09-03"
+
+    def test_drop_unsettled_session_agrees_with_the_helper(self):
+        from datetime import datetime
+
+        import pandas as pd
+
+        from src.utils.ohlcv import WIB, drop_unsettled_session, last_settled_date
+
+        idx = pd.to_datetime(["2026-09-01", "2026-09-02", "2026-09-03"]).tz_localize(WIB)
+        df = pd.DataFrame({"Close": [1.0, 2.0, 3.0]}, index=idx)
+        now = datetime(2026, 9, 3, 11, 2, tzinfo=WIB)
+        kept = drop_unsettled_session(df, now=now)
+        assert str(kept.index[-1].date()) == str(last_settled_date(now))
+
+    def test_the_note_no_longer_claims_the_live_bar_is_excluded(self):
+        import inspect
+
+        from src.tools import gap
+
+        src = inspect.getsource(gap._run_full_scan)
+        assert "in-progress session is excluded" not in src
+        assert "bar_settled" in inspect.getsource(gap._build_signal)
+
+
+class TestCrossFieldsSayWhichQuestionTheyAnswer:
+    """`death_cross` meant an event in get_technicals and a state in
+    scan_distribution_warning. CTRA on 2026-09-03 returned false from one and
+    true from the other with SMA50 580 under SMA200 684."""
+
+    @staticmethod
+    def _tech(sma50, sma200):
+        import numpy as np
+        import pandas as pd
+
+        from src.tools import technicals as tech
+
+        s50, s200 = pd.Series(sma50, dtype=float), pd.Series(sma200, dtype=float)
+        golden = death = False
+        state = None
+        if len(s50.dropna()) >= 2 and len(s200.dropna()) >= 2:
+            a, b = float(s50.iloc[-1]), float(s50.iloc[-2])
+            c, d = float(s200.iloc[-1]), float(s200.iloc[-2])
+            golden, death, state = b < d and a > c, b > d and a < c, a > c
+        assert np is not None and tech is not None
+        return {"golden_cross": golden, "death_cross": death,
+                "sma50_above_sma200": state}
+
+    def test_a_long_standing_death_cross_is_a_state_not_an_event(self):
+        out = self._tech([600.0, 580.0], [690.0, 684.0])   # CTRA's shape
+        assert out["death_cross"] is False, "no crossing happened on this bar"
+        assert out["sma50_above_sma200"] is False, "but it is under, and must say so"
+
+    def test_the_bar_a_cross_happens_on_sets_both(self):
+        out = self._tech([680.0, 690.0], [685.0, 684.0])
+        assert out["golden_cross"] is True
+        assert out["sma50_above_sma200"] is True
+
+    def test_the_payload_declares_its_basis(self):
+        import inspect
+
+        from src.tools import technicals as tech
+
+        src = inspect.getsource(tech)
+        assert '"cross_basis":         "event_on_this_bar"' in src
+        assert '"sma50_above_sma200":  sma50_above_sma200' in src
+

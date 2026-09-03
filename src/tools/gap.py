@@ -15,10 +15,13 @@ Two directions, and they are not mirror images:
 * ``down`` looks for the opposite of continuation — a gap down that closed above
   its open, which is the exhaustion candle rather than the breakdown.
 
-One caveat while the market is open: the in-progress session is dropped upstream
-by ``drop_incomplete_bars`` because its OHLC is still NaN, so this reads the last
-*completed* session's gap. Intraday gap-and-go on today's open is not something
-daily bars can answer.
+One caveat while the market is open: this reads the *in-progress* session, not
+the last completed one. ``drop_incomplete_bars`` upstream only removes Yahoo's
+pre-open placeholder, whose OHLC is still NaN; once trading starts the same row
+carries a real Open/High/Low/Close that is revised on every tick and passes that
+filter untouched. So intraday the open and the gap are final, but the high, low
+and close are running values and the signal can still change before 16:15 WIB.
+Every signal carries ``bar_date`` and ``bar_settled`` to say which case it is.
 """
 
 import asyncio
@@ -28,6 +31,7 @@ import pandas as pd
 
 from ..utils.cache import cache
 from ..utils.formatting import safe_round
+from ..utils.ohlcv import last_settled_date
 from ._scan_common import (
     Funnel,
     build_envelope,
@@ -95,6 +99,7 @@ def _build_signal(
         funnel.passed("enough_history")
 
     row = df.iloc[-1]
+    bar_date = str(df.index[-1].date()) if hasattr(df.index[-1], "date") else None
     open_, high, low, close = (_f(row.get(c)) for c in ("Open", "High", "Low", "Close"))
     prev_close = _f(row.get("prev_close"))
     vol = _f(row.get("Volume"))
@@ -170,7 +175,8 @@ def _build_signal(
         "gap_share_of_band_pct": safe_round(gap_share_of_band, 1),
         "volume": int(vol),
         "volume_ratio": safe_round(vol_ratio, 2),
-        "bar_date": str(df.index[-1].date()) if hasattr(df.index[-1], "date") else None,
+        "bar_date": bar_date,
+        "bar_settled": bar_date is not None and bar_date <= str(last_settled_date()),
         "confidence_score": min(score, 100.0),
     }
 
@@ -209,9 +215,13 @@ def _run_full_scan(min_vol: int, min_gap: float, direction: str, top_n: int = 10
         top_n=top_n,
         funnel=funnel,
     )
+    settled = str(last_settled_date())
+    envelope["last_settled_date"] = settled
     envelope["note"] = (
-        "Reads the last completed daily bar. While the market is open, the "
-        "in-progress session is excluded, so this reflects the previous session's gap."
+        "Reads the newest daily bar, which while the market is open is the "
+        "in-progress session, not the previous one. The open and the gap are "
+        "already final; the high, low and close are running values that can "
+        "still change before 16:15 WIB. Check bar_settled on each signal."
     )
     return envelope
 

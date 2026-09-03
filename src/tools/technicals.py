@@ -201,14 +201,22 @@ def _fetch_and_compute(yf_ticker: str, fetch_period: str,
     price_vs_sma50  = safe_round(((current_price - sma_50_val)  / sma_50_val)  * 100, 2) if sma_50_val  else None
     price_vs_sma200 = safe_round(((current_price - sma_200_val) / sma_200_val) * 100, 2) if sma_200_val else None
 
-    # Golden / death cross (SMA50 crosses SMA200)
+    # Golden / death cross. Two different questions share these names across the
+    # codebase and they disagree: here they are *events* (SMA50 crossed SMA200 on
+    # this bar, true for one session), while scan_distribution_warning reports the
+    # *state* (SMA50 currently below SMA200, true for months). Reading CTRA on
+    # 2026-09-03 gave death_cross=false here and death_cross=true there, on the
+    # same SMA50 of 580 sitting under an SMA200 of 684. Both fields are emitted so
+    # the caller does not have to guess which question was answered.
     golden_cross = death_cross = False
+    sma50_above_sma200 = None
     if len(sma50_s.dropna()) >= 2 and len(sma200_s.dropna()) >= 2:
         try:
             s50_curr,  s50_prev  = float(sma50_s.iloc[-1]),  float(sma50_s.iloc[-2])
             s200_curr, s200_prev = float(sma200_s.iloc[-1]), float(sma200_s.iloc[-2])
             golden_cross = s50_prev < s200_prev and s50_curr > s200_curr
             death_cross  = s50_prev > s200_prev and s50_curr < s200_curr
+            sma50_above_sma200 = s50_curr > s200_curr
         except (IndexError, ValueError):
             pass
 
@@ -274,7 +282,9 @@ def _fetch_and_compute(yf_ticker: str, fetch_period: str,
             "price_vs_sma50_pct":  price_vs_sma50,
             "price_vs_sma200_pct": price_vs_sma200,
             "golden_cross":        golden_cross,
-            "death_cross":         death_cross,
+            "death_cross":          death_cross,
+            "cross_basis":         "event_on_this_bar",
+            "sma50_above_sma200":  sma50_above_sma200,
         },
         "momentum": {
             "rsi_14": rsi_val,
