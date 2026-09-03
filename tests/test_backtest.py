@@ -41,15 +41,41 @@ class TestRegistry:
             "a scan without a registry entry ships with no base rate"
         )
 
-    def test_registry_defaults_match_the_scanner_module_defaults(self):
-        """A backtest run at different thresholds measures a different strategy."""
-        import src.tools.mean_reversion as mr
-        import src.tools.trend_pullback as tp
+    #: A few constants predate the parameter names and use an abbreviation.
+    CONST_ALIASES = {
+        "rsi_threshold": "DEFAULT_RSI_THRESH",
+        "stoch_threshold": "DEFAULT_STOCH_THRESH",
+        "tick_threshold": "DEFAULT_TICK_THRESH",
+        "vol_threshold": "DEFAULT_VOL_THRESH",
+    }
 
-        assert (bt.REGISTRY["scan_mean_reversion"].defaults["rsi_threshold"]
-                == mr.DEFAULT_RSI_THRESH)
-        assert (bt.REGISTRY["scan_trend_pullback"].defaults["max_pullback_pct"]
-                == tp.DEFAULT_MAX_PULLBACK_PCT)
+    def test_every_registry_default_matches_its_module_constant(self):
+        """A backtest at different thresholds measures a different strategy.
+
+        This replaces two spot-checks that missed a real mismatch:
+        min_below_sma20_pct was hardcoded to 0.0 here while the live scan
+        defaults to 5.0, so the backtest reported a base rate for a looser
+        filter than the one that actually runs. Checking every parameter is the
+        only version of this test worth having.
+        """
+        checked = 0
+        for name, s in bt.REGISTRY.items():
+            for param, value in s.defaults.items():
+                const = self.CONST_ALIASES.get(param, f"DEFAULT_{param.upper()}")
+                if not hasattr(s.module, const):
+                    continue
+                assert value == getattr(s.module, const), (
+                    f"{name}.{param} is {value} but {s.module.__name__}.{const} "
+                    f"is {getattr(s.module, const)}"
+                )
+                checked += 1
+        assert checked >= 20, f"only {checked} defaults had a constant to check against"
+
+    def test_the_mismatch_that_motivated_the_check_is_fixed(self):
+        import src.tools.mean_reversion as mr
+
+        assert (bt.REGISTRY["scan_mean_reversion"].defaults["min_below_sma20_pct"]
+                == mr.DEFAULT_MIN_BELOW_SMA20_PCT == 5.0)
 
     def test_every_declared_param_is_resolvable(self):
         for name, s in bt.REGISTRY.items():

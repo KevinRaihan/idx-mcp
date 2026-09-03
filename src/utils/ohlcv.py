@@ -25,7 +25,7 @@ target/stop touch resolved against it can still be contradicted before 16:15.
 ``drop_unsettled_session`` is the filter for those callers.
 """
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 import pandas as pd
 
@@ -33,6 +33,18 @@ WIB = timezone(timedelta(hours=7))
 
 #: IDX Session 2 ends 16:15 WIB. A bar dated today is only final after this.
 MARKET_CLOSE_WIB = time(16, 15)
+
+
+def last_settled_date(now: datetime | None = None, tz: timezone = WIB) -> date:
+    """The most recent date whose 16:15 WIB close has already passed.
+
+    Exposed separately because a caller that *keeps* the live bar still has to
+    say so. ``scan_gap`` reported a bar dated today alongside a note claiming
+    the in-progress session had been excluded; the two cannot both be true, and
+    the note was the one that was wrong.
+    """
+    now = (now or datetime.now(tz)).astimezone(tz)
+    return now.date() if now.time() >= MARKET_CLOSE_WIB else now.date() - timedelta(days=1)
 
 
 def drop_incomplete_bars(df: pd.DataFrame, price_col: str = "Close") -> pd.DataFrame:
@@ -68,10 +80,7 @@ def drop_unsettled_session(
     if df is None or df.empty:
         return df
 
-    now = (now or datetime.now(tz)).astimezone(tz)
-    settled_through = (
-        now.date() if now.time() >= MARKET_CLOSE_WIB else now.date() - timedelta(days=1)
-    )
+    settled_through = last_settled_date(now, tz)
 
     index = df.index
     if not isinstance(index, pd.DatetimeIndex):

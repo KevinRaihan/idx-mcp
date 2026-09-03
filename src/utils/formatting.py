@@ -1,22 +1,33 @@
 """IDR formatting and number helpers."""
 
 
-def format_idr(value: float | int | None) -> str | None:
-    """Format a large IDR number with T (trillion) / B (billion) / M (million) suffix."""
+def format_money(value: float | int | None, currency: str | None = "IDR") -> str | None:
+    """Format a large figure with a T / B / M suffix, labelled with its currency.
+
+    The currency is a parameter because IDX issuers do not all report in IDR:
+    BUMI's revenue is USD 1.4B, and rendering it as "IDR 1.4B" understated it by
+    the FX rate while looking entirely normal.
+    """
     if value is None:
         return None
 
+    code = (currency or "IDR").upper()
     abs_val = abs(value)
     sign = "-" if value < 0 else ""
 
     if abs_val >= 1_000_000_000_000:
-        return f"{sign}IDR {abs_val / 1_000_000_000_000:.1f}T"
+        return f"{sign}{code} {abs_val / 1_000_000_000_000:.1f}T"
     elif abs_val >= 1_000_000_000:
-        return f"{sign}IDR {abs_val / 1_000_000_000:.1f}B"
+        return f"{sign}{code} {abs_val / 1_000_000_000:.1f}B"
     elif abs_val >= 1_000_000:
-        return f"{sign}IDR {abs_val / 1_000_000:.1f}M"
+        return f"{sign}{code} {abs_val / 1_000_000:.1f}M"
     else:
-        return f"{sign}IDR {abs_val:,.0f}"
+        return f"{sign}{code} {abs_val:,.0f}"
+
+
+def format_idr(value: float | int | None) -> str | None:
+    """IDR-labelled :func:`format_money`. Kept for callers whose figures are IDR."""
+    return format_money(value, "IDR")
 
 
 def format_net_flow(value: float | int | None) -> str | None:

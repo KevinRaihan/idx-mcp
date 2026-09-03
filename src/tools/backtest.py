@@ -75,6 +75,7 @@ class Strategy:
     """How to replay one scan over history."""
 
     name: str
+    module: object
     build: Callable
     param_names: tuple[str, ...]
     defaults: dict
@@ -91,6 +92,7 @@ class Strategy:
 REGISTRY: dict[str, Strategy] = {
     "scan_ma_breakout": Strategy(
         name="scan_ma_breakout",
+        module=scanner,
         enrich=scanner._enrich_df,
         build=scanner._build_signal,
         param_names=("tick_threshold", "vol_threshold"),
@@ -100,6 +102,7 @@ REGISTRY: dict[str, Strategy] = {
     ),
     "scan_golden_cross": Strategy(
         name="scan_golden_cross",
+        module=golden_cross,
         enrich=golden_cross._enrich_df,
         build=golden_cross._build_gc_signal,
         param_names=("stoch_threshold", "min_volume"),
@@ -109,16 +112,18 @@ REGISTRY: dict[str, Strategy] = {
     ),
     "scan_mean_reversion": Strategy(
         name="scan_mean_reversion",
+        module=mean_reversion,
         enrich=mean_reversion._enrich_df,
         build=mean_reversion._build_signal,
         param_names=("rsi_threshold", "min_volume", "min_below_sma20_pct"),
         defaults={"rsi_threshold": mean_reversion.DEFAULT_RSI_THRESH,
                   "min_volume": mean_reversion.DEFAULT_MIN_VOLUME,
-                  "min_below_sma20_pct": 0.0},
+                  "min_below_sma20_pct": mean_reversion.DEFAULT_MIN_BELOW_SMA20_PCT},
         min_rows=mean_reversion.MIN_ROWS,
     ),
     "scan_volatility_squeeze": Strategy(
         name="scan_volatility_squeeze",
+        module=vol_squeeze,
         enrich=vol_squeeze._enrich_df,
         build=vol_squeeze._build_signal,
         param_names=("min_volume", "squeeze_tolerance"),
@@ -128,6 +133,7 @@ REGISTRY: dict[str, Strategy] = {
     ),
     "scan_volume_accumulation": Strategy(
         name="scan_volume_accumulation",
+        module=volume_accumulation,
         enrich=volume_accumulation._enrich_df,
         build=volume_accumulation._build_signal,
         param_names=("min_volume", "vol_multiple", "max_spread_pct"),
@@ -138,6 +144,7 @@ REGISTRY: dict[str, Strategy] = {
     ),
     "scan_relative_strength": Strategy(
         name="scan_relative_strength",
+        module=relative_strength,
         enrich=None,                       # works off raw closes plus the index
         build=relative_strength._build_signal,
         param_names=("min_volume", "min_excess_3m_pct", "require_rs_high"),
@@ -149,6 +156,7 @@ REGISTRY: dict[str, Strategy] = {
     ),
     "scan_trend_pullback": Strategy(
         name="scan_trend_pullback",
+        module=trend_pullback,
         enrich=trend_pullback._enrich_df,
         build=trend_pullback._build_signal,
         param_names=("min_volume", "rsi_min", "rsi_max", "max_pullback_pct"),
@@ -160,6 +168,7 @@ REGISTRY: dict[str, Strategy] = {
     ),
     "scan_breakout_high": Strategy(
         name="scan_breakout_high",
+        module=breakout_high,
         enrich=breakout_high._enrich_df,
         build=breakout_high._build_signal,
         param_names=("min_volume", "vol_multiple", "max_base_range_pct"),
@@ -172,6 +181,7 @@ REGISTRY: dict[str, Strategy] = {
     ),
     "scan_distribution_warning": Strategy(
         name="scan_distribution_warning",
+        module=distribution,
         enrich=distribution._enrich_df,
         build=distribution._build_signal,
         param_names=("min_volume", "min_warning_score"),
@@ -182,6 +192,7 @@ REGISTRY: dict[str, Strategy] = {
     ),
     "scan_gap": Strategy(
         name="scan_gap",
+        module=gap,
         enrich=gap._enrich_df,
         build=gap._build_signal,
         param_names=("min_volume", "min_gap_pct", "direction"),
