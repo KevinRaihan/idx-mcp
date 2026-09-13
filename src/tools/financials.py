@@ -41,6 +41,59 @@ def _latest_col(df):
     return df.columns[0]
 
 
+#: How far a column may sit from exactly one year before the latest one and
+#: still count as the same period. A leap year moves a period end by a day; the
+#: nearest wrong candidate, an adjacent quarter, is about 90 days away.
+SAME_PERIOD_TOLERANCE_DAYS = 45
+
+
+def same_period_last_year(columns, latest):
+    """The column covering the period one year before ``latest``, or None.
+
+    Matched by date, never by position. Yahoo's quarterly statements skip
+    periods: DMAS came back as Jun-26, Mar-26, Dec-25, Jun-25, Mar-25 with no
+    Sep-25, so neither ``columns[1]`` (the previous quarter) nor ``columns[4]``
+    (Mar-25) is the year-ago quarter. Only the date says which one is.
+    """
+    for col in columns:
+        try:
+            gap_days = (latest - col).days
+        except (TypeError, AttributeError):
+            continue
+        if abs(gap_days - 365) <= SAME_PERIOD_TOLERANCE_DAYS:
+            return col
+    return None
+
+
+def yoy_growth(income_stmt) -> tuple[float | None, float | None, str | None]:
+    """Revenue and net income growth against the same period a year earlier.
+
+    Returns ``(revenue_growth_pct, net_income_growth_pct, prior_period_end)``.
+
+    This used to compare against ``columns[1]``, which on the quarterly report
+    is the previous quarter. DMAS Q2-2026 was published as net income -54.3%
+    "YoY" when the year-on-year figure was +382%: Q1 had carried a large land
+    sale. When the year-ago period is not in the source, growth is None rather
+    than a quarter-on-quarter number under a year-on-year name.
+    """
+    latest = _latest_col(income_stmt)
+    if latest is None:
+        return None, None, None
+    prior = same_period_last_year(income_stmt.columns[1:], latest)
+    if prior is None:
+        return None, None, None
+
+    def _growth(key):
+        now = _safe_get(income_stmt[latest], key)
+        then = _safe_get(income_stmt[prior], key)
+        if now is None or not then:
+            return None
+        return safe_round(((now - then) / abs(then)) * 100, 2)
+
+    prior_end = str(prior.date()) if hasattr(prior, "date") else str(prior)
+    return _growth("Total Revenue"), _growth("Net Income"), prior_end
+
+
 #: Ratios Yahoo forms as (market value in the quote currency) / (statement value
 #: in financialCurrency). When an issuer reports in a currency it does not trade
 #: in, every one of these is off by exactly the FX rate. ``trailingPE`` is not
@@ -154,18 +207,16 @@ async def get_financials(ticker: str, period: str = "annual") -> dict:
     net_income       = _inc("Net Income")
     gross_profit     = _inc("Gross Profit")
     operating_income = _inc("Operating Income")
+    # Trailing twelve months from `info` on both periods, so the quarterly report
+    # shows the same EPS as the annual one. Labelled in the payload, not implied.
     eps              = _coerce(info.get("trailingEps"))
 
-    # YoY growth
-    revenue_growth = net_income_growth = None
-    if income_stmt is not None and len(income_stmt.columns) >= 2:
-        prev_col = income_stmt.columns[1]
-        prev_rev = _safe_get(income_stmt[prev_col], "Total Revenue")
-        prev_ni  = _safe_get(income_stmt[prev_col], "Net Income")
-        if revenue and prev_rev and prev_rev != 0:
-            revenue_growth = safe_round(((revenue - prev_rev) / abs(prev_rev)) * 100, 2)
-        if net_income and prev_ni and prev_ni != 0:
-            net_income_growth = safe_round(((net_income - prev_ni) / abs(prev_ni)) * 100, 2)
+    revenue_growth, net_income_growth, growth_prior_end = yoy_growth(income_stmt)
+    growth_basis = (
+        None if inc_col is None
+        else "same_period_prior_year" if growth_prior_end
+        else "prior_year_period_missing_from_source"
+    )
 
     # ── Balance sheet ─────────────────────────────────────────────────────────
     def _bal(key):
@@ -246,8 +297,11 @@ async def get_financials(ticker: str, period: str = "annual") -> dict:
             "net_income": net_income,
             "net_income_formatted": format_money(net_income, reporting_currency),
             "eps": eps,
+            "eps_basis": "trailing_twelve_months" if eps is not None else None,
             "revenue_growth_yoy_pct": revenue_growth,
             "net_income_growth_yoy_pct": net_income_growth,
+            "growth_basis": growth_basis,
+            "growth_compared_with_period_ending": growth_prior_end,
         },
         "margins": {
             "gross_margin_pct":    safe_pct(gross_profit, revenue),

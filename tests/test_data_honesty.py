@@ -385,3 +385,110 @@ class TestStatementsAreLabelledWithTheirCurrency:
         from src.utils.formatting import format_money
 
         assert format_money(None, "USD") is None
+
+
+class TestGrowthComparesTheSamePeriodAYearEarlier:
+    """get_financials(period="quarterly") compared against columns[1], the
+    previous quarter, and called it YoY. DMAS Q2-2026 came back as revenue
+    -28.77% and net income -54.3% when the year-on-year figures were +611.29%
+    and +382.17%. Yahoo also skips quarters, so position cannot be trusted."""
+
+    # Yahoo's DMAS quarterly columns on 2026-09-13: no Sep-25.
+    DMAS_COLS = ["2026-06-30", "2026-03-31", "2025-12-31", "2025-06-30", "2025-03-31"]
+    DMAS_REV = [750216406794.0, 1053230360920.0, 529508075971.0, 105472691544.0, 507885095770.0]
+    DMAS_NI = [373986015787.0, 818266564302.0, 275166937745.0, 77563373165.0, 355452713865.0]
+
+    @staticmethod
+    def _stmt(cols, rev, ni):
+        import pandas as pd
+
+        return pd.DataFrame(
+            {pd.Timestamp(c): {"Total Revenue": r, "Net Income": n}
+             for c, r, n in zip(cols, rev, ni)}
+        )
+
+    async def _payload(self, monkeypatch, cols, rev, ni):
+        import pandas as pd
+
+        from src.tools import financials as fin
+
+        fake = type("FakeTicker", (), {
+            "info": {"trailingEps": 32.37, "currency": "IDR", "financialCurrency": "IDR"},
+            "quarterly_financials": self._stmt(cols, rev, ni),
+            "quarterly_balance_sheet": pd.DataFrame(),
+            "quarterly_cashflow": pd.DataFrame(),
+        })()
+        monkeypatch.setattr(fin.yf, "Ticker", lambda symbol: fake)
+        monkeypatch.setattr(fin.cache, "get", lambda *a, **k: None)
+        monkeypatch.setattr(fin.cache, "set", lambda *a, **k: None)
+        return (await fin.get_financials("DMAS", period="quarterly"))["income_statement"]
+
+    def test_dmas_q2_is_compared_with_q2_not_q1(self):
+        from src.tools.financials import yoy_growth
+
+        rev, ni, prior = yoy_growth(self._stmt(self.DMAS_COLS, self.DMAS_REV, self.DMAS_NI))
+        assert prior == "2025-06-30"
+        assert rev == pytest.approx(611.29, abs=0.01)
+        assert ni == pytest.approx(382.17, abs=0.01)
+
+    def test_the_published_numbers_were_quarter_on_quarter(self):
+        """Teeth: the figures the tool used to publish are exactly Q2 over Q1."""
+        rev, ni = self.DMAS_REV, self.DMAS_NI
+        assert round((rev[0] - rev[1]) / rev[1] * 100, 2) == -28.77
+        assert round((ni[0] - ni[1]) / ni[1] * 100, 2) == -54.3
+
+    def test_a_skipped_quarter_does_not_shift_the_comparison(self):
+        """No Sep-25 column, so a fixed offset of four lands on Mar-25."""
+        import pandas as pd
+
+        from src.tools.financials import same_period_last_year
+
+        cols = [pd.Timestamp(c) for c in self.DMAS_COLS]
+        assert same_period_last_year(cols[1:], cols[0]) == pd.Timestamp("2025-06-30")
+        assert cols[4] == pd.Timestamp("2025-03-31")
+
+    def test_a_missing_year_ago_period_yields_none_not_a_neighbour(self):
+        from src.tools.financials import yoy_growth
+
+        cols = ["2026-06-30", "2026-03-31", "2025-12-31", "2025-09-30"]
+        assert yoy_growth(self._stmt(cols, [1.0] * 4, [1.0] * 4)) == (None, None, None)
+
+    def test_adjacent_quarters_fall_outside_the_tolerance(self):
+        """Jun-26 against Mar-25 is 456 days and against Sep-25 is 273: both
+        sit about 91 days from a year, so the tolerance must stay below that."""
+        from src.tools.financials import SAME_PERIOD_TOLERANCE_DAYS
+
+        assert 1 <= SAME_PERIOD_TOLERANCE_DAYS < 91
+
+    @pytest.mark.parametrize("latest, prior", [
+        ("2024-06-30", "2023-06-30"),   # 366 days, leap year
+        ("2024-12-31", "2023-12-31"),   # 366 days, leap year
+        ("2025-12-31", "2024-12-31"),   # annual columns
+    ])
+    def test_leap_years_and_annual_columns_still_match(self, latest, prior):
+        from src.tools.financials import yoy_growth
+
+        rev, ni, found = yoy_growth(self._stmt([latest, prior], [110.0, 100.0], [55.0, 50.0]))
+        assert (rev, ni, found) == (10.0, 10.0, prior)
+
+    def test_a_single_column_has_no_growth(self):
+        from src.tools.financials import yoy_growth
+
+        assert yoy_growth(self._stmt(["2026-06-30"], [1.0], [1.0])) == (None, None, None)
+
+    async def test_the_payload_says_what_it_compared_and_what_eps_is(self, monkeypatch):
+        inc = await self._payload(monkeypatch, self.DMAS_COLS, self.DMAS_REV, self.DMAS_NI)
+        assert inc["revenue_growth_yoy_pct"] == pytest.approx(611.29, abs=0.01)
+        assert inc["net_income_growth_yoy_pct"] == pytest.approx(382.17, abs=0.01)
+        assert inc["growth_basis"] == "same_period_prior_year"
+        assert inc["growth_compared_with_period_ending"] == "2025-06-30"
+        assert inc["eps"] == 32.37
+        assert inc["eps_basis"] == "trailing_twelve_months"
+
+    async def test_the_payload_says_when_the_year_ago_period_is_missing(self, monkeypatch):
+        cols = ["2026-06-30", "2026-03-31", "2025-12-31", "2025-09-30"]
+        inc = await self._payload(monkeypatch, cols, [4.0, 3.0, 2.0, 1.0], [4.0, 3.0, 2.0, 1.0])
+        assert inc["revenue_growth_yoy_pct"] is None
+        assert inc["net_income_growth_yoy_pct"] is None
+        assert inc["growth_basis"] == "prior_year_period_missing_from_source"
+        assert inc["growth_compared_with_period_ending"] is None
