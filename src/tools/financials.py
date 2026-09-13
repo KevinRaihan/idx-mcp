@@ -100,6 +100,11 @@ def yoy_growth(income_stmt) -> tuple[float | None, float | None, str | None]:
 #: here: Yahoo's trailing EPS is already in the quote currency.
 CURRENCY_MIXED_RATIOS = ("pe_forward", "pb", "ps", "ev_ebitda")
 
+#: With either currency unknown a ratio cannot be checked, only bounded. A
+#: USD-over-IDR mix inflates by roughly 17,000, so even a 0.06 price-to-book
+#: lands above this, and a genuine reading above it is not usable anyway.
+MAX_UNVERIFIED_RATIO = 1000.0
+
 
 def rescale_valuation(ratios: dict, info: dict) -> tuple[dict, str]:
     """Convert currency-mixed valuation ratios into the quote currency.
@@ -112,7 +117,14 @@ def rescale_valuation(ratios: dict, info: dict) -> tuple[dict, str]:
     """
     reporting = (info.get("financialCurrency") or "").upper()
     quote = (info.get("currency") or "").upper()
-    if not reporting or not quote or reporting == quote:
+    if not reporting or not quote:
+        # Unknown is not a match. This path runs whenever Yahoo rate-limits the
+        # info call, and it used to report the currencies as matching.
+        for key in (*CURRENCY_MIXED_RATIOS, "peg"):
+            if ratios.get(key) is not None and ratios[key] > MAX_UNVERIFIED_RATIO:
+                ratios[key] = None
+        return ratios, "currency_unverified"
+    if reporting == quote:
         return ratios, "reported_currency_matches_quote_currency"
 
     rate = fx_rate(reporting, quote)
@@ -126,6 +138,31 @@ def rescale_valuation(ratios: dict, info: dict) -> tuple[dict, str]:
             ratios[key] = ratios[key] / rate
     ratios["peg"] = None
     return ratios, f"rescaled_from_{reporting.lower()}_at_{rate:g}"
+
+
+def trailing_earnings(info: dict) -> tuple[float | None, float | None, str | None]:
+    """Trailing EPS and P/E, or None where Yahoo's own fields contradict each other.
+
+    Returns ``(eps, pe_ttm, basis)``. COCO on 2026-09-13 had trailingEps 7.275
+    and trailingPE 18.0 while netIncomeToCommon was IDR -198.6B, a loss larger
+    than its revenue: the EPS field had not been refreshed since the company was
+    profitable, so the P/E priced a profit that no longer exists.
+
+    Signs are compared, not magnitudes. Net income is in the reporting currency
+    and EPS in the quote currency, and only the sign survives any exchange rate.
+    """
+    eps = _coerce(info.get("trailingEps"))
+    pe = _coerce(info.get("trailingPE"))
+    net_income = _coerce(info.get("netIncomeToCommon"))
+    if eps is None:
+        return None, None, None
+    if net_income and (eps > 0) != (net_income > 0):
+        return None, None, "dropped_trailing_eps_contradicts_ttm_net_income"
+    if eps <= 0:
+        return eps, None, "trailing_twelve_months_no_pe_for_a_loss"
+    if net_income is None:
+        return eps, pe, "trailing_twelve_months_unchecked"
+    return eps, pe, "trailing_twelve_months"
 
 
 async def get_financials(ticker: str, period: str = "annual") -> dict:
@@ -209,7 +246,7 @@ async def get_financials(ticker: str, period: str = "annual") -> dict:
     operating_income = _inc("Operating Income")
     # Trailing twelve months from `info` on both periods, so the quarterly report
     # shows the same EPS as the annual one. Labelled in the payload, not implied.
-    eps              = _coerce(info.get("trailingEps"))
+    eps, pe_ttm, earnings_basis = trailing_earnings(info)
 
     revenue_growth, net_income_growth, growth_prior_end = yoy_growth(income_stmt)
     growth_basis = (
@@ -233,7 +270,6 @@ async def get_financials(ticker: str, period: str = "annual") -> dict:
     current_ratio = safe_round(current_assets / current_liabilities, 2) if current_assets and current_liabilities else None
 
     # ── Valuation (from info) ─────────────────────────────────────────────────
-    pe_ttm     = _coerce(info.get("trailingPE"))
     pe_forward = _coerce(info.get("forwardPE"))
     pb         = _coerce(info.get("priceToBook"))
     ps         = _coerce(info.get("priceToSalesTrailing12Months"))
@@ -297,7 +333,7 @@ async def get_financials(ticker: str, period: str = "annual") -> dict:
             "net_income": net_income,
             "net_income_formatted": format_money(net_income, reporting_currency),
             "eps": eps,
-            "eps_basis": "trailing_twelve_months" if eps is not None else None,
+            "eps_basis": earnings_basis,
             "revenue_growth_yoy_pct": revenue_growth,
             "net_income_growth_yoy_pct": net_income_growth,
             "growth_basis": growth_basis,
@@ -319,6 +355,7 @@ async def get_financials(ticker: str, period: str = "annual") -> dict:
         },
         "valuation": {
             "pe_ttm":           safe_round(pe_ttm, 2),
+            "pe_ttm_basis":     earnings_basis,
             "pe_forward":       safe_round(pe_forward, 2),
             "pb":               safe_round(pb, 2),
             "ps":               safe_round(ps, 2),
@@ -349,10 +386,13 @@ async def get_financials(ticker: str, period: str = "annual") -> dict:
     mark_partial(
         result,
         ("income_statement.revenue", "income_statement.net_income",
+         "income_statement.reporting_currency",
          "valuation.pe_ttm", "profitability.roe_pct",
          "cash_flow.operating_cash_flow", "cash_flow.free_cash_flow"),
-        "Yahoo did not return every statement line for this ticker. A ratio "
-        "derived from a missing line is absent rather than zero.",
+        "Yahoo did not return every statement line, or the reporting currency, "
+        "for this ticker. A ratio derived from a missing line is absent rather "
+        "than zero, and an unknown currency is left unlabelled rather than "
+        "assumed to be IDR.",
     )
     cache.set("get_financials", normalized, result, TTLCache.TTL_FUNDAMENTALS, {"period": period})
     return result

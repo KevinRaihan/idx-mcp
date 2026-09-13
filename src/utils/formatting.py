@@ -7,22 +7,27 @@ def format_money(value: float | int | None, currency: str | None = "IDR") -> str
     The currency is a parameter because IDX issuers do not all report in IDR:
     BUMI's revenue is USD 1.4B, and rendering it as "IDR 1.4B" understated it by
     the FX rate while looking entirely normal.
+
+    An explicit ``None`` means the currency is unknown and the figure is left
+    unlabelled. It used to fall back to IDR, so a rate-limited info call turned
+    BUMI's USD 449.1M back into "IDR 449.1M". Omitting the argument still gives
+    IDR.
     """
     if value is None:
         return None
 
-    code = (currency or "IDR").upper()
+    label = f"{currency.upper()} " if currency else ""
     abs_val = abs(value)
     sign = "-" if value < 0 else ""
 
     if abs_val >= 1_000_000_000_000:
-        return f"{sign}{code} {abs_val / 1_000_000_000_000:.1f}T"
+        return f"{sign}{label}{abs_val / 1_000_000_000_000:.1f}T"
     elif abs_val >= 1_000_000_000:
-        return f"{sign}{code} {abs_val / 1_000_000_000:.1f}B"
+        return f"{sign}{label}{abs_val / 1_000_000_000:.1f}B"
     elif abs_val >= 1_000_000:
-        return f"{sign}{code} {abs_val / 1_000_000:.1f}M"
+        return f"{sign}{label}{abs_val / 1_000_000:.1f}M"
     else:
-        return f"{sign}{code} {abs_val:,.0f}"
+        return f"{sign}{label}{abs_val:,.0f}"
 
 
 def format_idr(value: float | int | None) -> str | None:

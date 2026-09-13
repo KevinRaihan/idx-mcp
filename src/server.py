@@ -81,7 +81,7 @@ def _sanitize_nans(obj):
     return obj
 
 
-__version__ = "1.8.1"
+__version__ = "1.8.2"
 
 
 class ToolArgumentError(ValueError):
