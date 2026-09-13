@@ -362,10 +362,18 @@ class TestValuationRatiosAreInTheQuoteCurrency:
         assert "pe_ttm" not in CURRENCY_MIXED_RATIOS
         assert "trailingPE" not in CURRENCY_MIXED_RATIOS
 
-    def test_a_missing_currency_field_changes_nothing(self, monkeypatch):
+    def test_a_missing_currency_field_is_not_reported_as_a_match(self, monkeypatch):
+        """Unknown is not a match. A rate-limited info call used to land here and
+        pass the BUMI mix through under 'reported_currency_matches_quote_currency'."""
         out, basis = self._rescale(self.BUMI, None, "IDR", 17685.0, monkeypatch)
-        assert out == self.BUMI
-        assert basis == "reported_currency_matches_quote_currency"
+        assert basis == "currency_unverified"
+        assert all(out[k] is None for k in ("pe_forward", "pb", "ps", "ev_ebitda"))
+
+    def test_plausible_ratios_survive_an_unknown_currency(self, monkeypatch):
+        pristine = {"pe_forward": 7.0, "pb": 1.42, "ps": 1.1, "ev_ebitda": 4.2, "peg": 0.8}
+        out, basis = self._rescale(pristine, "IDR", None, 1.0, monkeypatch)
+        assert out == pristine
+        assert basis == "currency_unverified"
 
 
 class TestStatementsAreLabelledWithTheirCurrency:
@@ -408,20 +416,10 @@ class TestGrowthComparesTheSamePeriodAYearEarlier:
         )
 
     async def _payload(self, monkeypatch, cols, rev, ni):
-        import pandas as pd
-
-        from src.tools import financials as fin
-
-        fake = type("FakeTicker", (), {
-            "info": {"trailingEps": 32.37, "currency": "IDR", "financialCurrency": "IDR"},
-            "quarterly_financials": self._stmt(cols, rev, ni),
-            "quarterly_balance_sheet": pd.DataFrame(),
-            "quarterly_cashflow": pd.DataFrame(),
-        })()
-        monkeypatch.setattr(fin.yf, "Ticker", lambda symbol: fake)
-        monkeypatch.setattr(fin.cache, "get", lambda *a, **k: None)
-        monkeypatch.setattr(fin.cache, "set", lambda *a, **k: None)
-        return (await fin.get_financials("DMAS", period="quarterly"))["income_statement"]
+        info = {"trailingEps": 32.37, "netIncomeToCommon": 1_557_000_000_000.0,
+                "currency": "IDR", "financialCurrency": "IDR"}
+        out = await _financials_from(monkeypatch, info, self._stmt(cols, rev, ni), "quarterly")
+        return out["income_statement"]
 
     def test_dmas_q2_is_compared_with_q2_not_q1(self):
         from src.tools.financials import yoy_growth
@@ -492,3 +490,112 @@ class TestGrowthComparesTheSamePeriodAYearEarlier:
         assert inc["net_income_growth_yoy_pct"] is None
         assert inc["growth_basis"] == "prior_year_period_missing_from_source"
         assert inc["growth_compared_with_period_ending"] is None
+
+
+async def _financials_from(monkeypatch, info, stmt, period="annual", ticker="TEST"):
+    """get_financials against a canned Yahoo response, with the cache bypassed."""
+    import pandas as pd
+
+    from src.tools import financials as fin
+
+    prefix = "quarterly_" if period == "quarterly" else ""
+    fake = type("FakeTicker", (), {
+        "info": info,
+        f"{prefix}financials": stmt,
+        f"{prefix}balance_sheet": pd.DataFrame(),
+        f"{prefix}cashflow": pd.DataFrame(),
+    })()
+    monkeypatch.setattr(fin.yf, "Ticker", lambda symbol: fake)
+    monkeypatch.setattr(fin.cache, "get", lambda *a, **k: None)
+    monkeypatch.setattr(fin.cache, "set", lambda *a, **k: None)
+    return await fin.get_financials(ticker, period=period)
+
+
+class TestEarningsThatContradictThemselvesAreDropped:
+    """COCO on 2026-09-13: trailingEps 7.275 and trailingPE 18.0 while
+    netIncomeToCommon was IDR -198.6B, a loss larger than its revenue. The P/E
+    priced a profit the company no longer makes."""
+
+    COCO = {"currency": "IDR", "financialCurrency": "IDR", "trailingEps": 7.275,
+            "trailingPE": 18.006872, "netIncomeToCommon": -198559924224.0}
+    BBCA = {"currency": "IDR", "financialCurrency": "IDR", "trailingEps": 471.84,
+            "trailingPE": 13.404968, "netIncomeToCommon": 58055320403968.0}
+    # USD net income beside IDR EPS: magnitudes differ by the FX rate, signs do not.
+    BUMI = {"currency": "IDR", "financialCurrency": "USD", "trailingEps": 5.75,
+            "trailingPE": 36.869564, "netIncomeToCommon": 119456304.0}
+
+    DROPPED = "dropped_trailing_eps_contradicts_ttm_net_income"
+
+    def test_a_stale_profit_beside_a_loss_is_dropped(self):
+        from src.tools.financials import trailing_earnings
+
+        assert trailing_earnings(self.COCO) == (None, None, self.DROPPED)
+
+    def test_consistent_earnings_pass_through(self):
+        from src.tools.financials import trailing_earnings
+
+        assert trailing_earnings(self.BBCA) == (471.84, 13.404968, "trailing_twelve_months")
+
+    def test_the_check_survives_a_currency_mismatch(self):
+        from src.tools.financials import trailing_earnings
+
+        assert trailing_earnings(self.BUMI) == (5.75, 36.869564, "trailing_twelve_months")
+
+    def test_a_stale_loss_beside_a_profit_is_dropped_too(self):
+        from src.tools.financials import trailing_earnings
+
+        info = dict(self.BBCA, trailingEps=-4.0, trailingPE=None)
+        assert trailing_earnings(info) == (None, None, self.DROPPED)
+
+    def test_a_consistent_loss_keeps_its_eps_but_has_no_pe(self):
+        from src.tools.financials import trailing_earnings
+
+        info = dict(self.COCO, trailingEps=-13.95, trailingPE=9.4)
+        assert trailing_earnings(info) == (-13.95, None, "trailing_twelve_months_no_pe_for_a_loss")
+
+    def test_without_net_income_the_eps_is_marked_unchecked(self):
+        from src.tools.financials import trailing_earnings
+
+        info = {k: v for k, v in self.BBCA.items() if k != "netIncomeToCommon"}
+        assert trailing_earnings(info) == (471.84, 13.404968, "trailing_twelve_months_unchecked")
+
+    def test_a_pe_without_an_eps_cannot_be_checked(self):
+        from src.tools.financials import trailing_earnings
+
+        assert trailing_earnings({"trailingPE": 18.0}) == (None, None, None)
+
+    async def test_the_payload_prints_no_pe_for_coco(self, monkeypatch):
+        import pandas as pd
+
+        out = await _financials_from(monkeypatch, self.COCO, pd.DataFrame(), ticker="COCO")
+        assert out["valuation"]["pe_ttm"] is None
+        assert out["income_statement"]["eps"] is None
+        assert out["valuation"]["pe_ttm_basis"] == self.DROPPED
+        assert out["income_statement"]["eps_basis"] == self.DROPPED
+
+
+class TestAnUnknownCurrencyIsNotReportedAsIdr:
+    """When Yahoo rate-limits the info call (HTTP 429, then 401 'Invalid
+    Crumb'), financialCurrency is missing. BUMI's USD 449.1M quarterly revenue
+    printed as 'IDR 449.1M' and valuation_basis claimed the currencies matched."""
+
+    def test_an_unknown_currency_gets_no_label(self):
+        from src.utils.formatting import format_money
+
+        assert format_money(449_094_722.0, None) == "449.1M"
+        assert format_money(-2_000_000_000_000.0, None) == "-2.0T"
+        assert format_money(950.0, None) == "950"
+
+    async def test_a_rate_limited_info_call_is_reported_as_unknown(self, monkeypatch):
+        import pandas as pd
+
+        stmt = pd.DataFrame({pd.Timestamp("2026-06-30"):
+                             {"Total Revenue": 449094722.0, "Net Income": 36292676.0}})
+        out = await _financials_from(monkeypatch, {}, stmt, "quarterly", ticker="BUMI")
+        inc = out["income_statement"]
+        assert inc["reporting_currency"] is None
+        assert inc["revenue_formatted"] == "449.1M"
+        assert inc["net_income_formatted"] == "36.3M"
+        assert out["valuation"]["valuation_basis"] == "currency_unverified"
+        assert out["partial"] is True
+        assert "income_statement.reporting_currency" in out["missing_fields"]
