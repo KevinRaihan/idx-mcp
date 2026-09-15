@@ -81,7 +81,7 @@ def _sanitize_nans(obj):
     return obj
 
 
-__version__ = "1.8.2"
+__version__ = "1.8.3"
 
 
 class ToolArgumentError(ValueError):
@@ -319,7 +319,12 @@ TOOLS = [
             "win rates — broken down per strategy. This is the forward test: use it to find "
             "out whether a strategy's confidence scores mean anything before trusting them. "
             "A thesis whose target and stop were both touched in one session is scored "
-            "pessimistically as a stop and flagged."
+            "pessimistically as a stop and flagged. The entry is treated as a resting limit "
+            "order: a thesis opens only once price reaches it (at the open if the session "
+            "gaps through, otherwise at the limit), and until then it is awaiting_fill, or "
+            "not_filled after its target date — neither counts toward win rate, return or "
+            "exposure. Returns are measured from fill_price, and a stop the session gaps "
+            "through exits at the open."
         ),
         inputSchema={
             "type": "object",

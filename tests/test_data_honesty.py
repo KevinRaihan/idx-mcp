@@ -145,12 +145,20 @@ class TestDividendYieldScaling:
         assert pct == pytest.approx(4.39, abs=0.01)
         assert basis == "trailing_dividend_rate_over_price"
 
-    @pytest.mark.parametrize("raw", [4.39, 0.0439])
-    def test_both_field_scales_resolve_to_the_same_yield(self, raw):
-        """The regression: 4.39 was multiplied again and reported as 439%."""
-        pct, basis = dividend_yield_pct({"dividendYield": raw})
+    def test_the_field_is_read_as_a_percentage(self):
+        """The first regression: 4.39 was multiplied again and reported as 439%."""
+        pct, basis = dividend_yield_pct({"dividendYield": 4.39})
         assert pct == pytest.approx(4.39, abs=0.01)
-        assert basis == "dividend_yield_field_scale_inferred"
+        assert basis == "dividend_yield_field_percent"
+
+    def test_a_yield_below_one_percent_is_not_multiplied_by_100(self):
+        """The second regression: BRPT's 0.1% was inferred to be a fraction and
+        reported as 10.0%. SSIA's 0.29 matches 5 / 1,730, so the field is a
+        percentage even below 1."""
+        assert dividend_yield_pct({"dividendYield": 0.1}) == (0.1, "dividend_yield_field_percent")
+        assert dividend_yield_pct({"dividendYield": 0.29})[0] == pytest.approx(
+            5.0 / 1730.0 * 100, abs=0.01
+        )
 
     @pytest.mark.parametrize("raw", [439.0, 829.0])
     def test_an_impossible_yield_is_dropped_not_reported(self, raw):
@@ -318,12 +326,12 @@ class TestValuationRatiosAreInTheQuoteCurrency:
     against a real 3.00, from a 212 IDR price over a 0.004 USD book value."""
 
     @staticmethod
-    def _rescale(ratios, reporting, quote, rate, monkeypatch):
+    def _rescale(ratios, reporting, quote, rate, monkeypatch, extra=None):
         from src.tools import financials as fin
 
         monkeypatch.setattr(fin, "fx_rate", lambda f, t: rate)
         return fin.rescale_valuation(
-            dict(ratios), {"financialCurrency": reporting, "currency": quote}
+            dict(ratios), {"financialCurrency": reporting, "currency": quote, **(extra or {})}
         )
 
     BUMI = {"pe_forward": 211999.98, "pb": 52999.996, "ps": 48787.7,
@@ -599,3 +607,155 @@ class TestAnUnknownCurrencyIsNotReportedAsIdr:
         assert out["valuation"]["valuation_basis"] == "currency_unverified"
         assert out["partial"] is True
         assert "income_statement.reporting_currency" in out["missing_fields"]
+
+
+class TestOnlyMixedRatiosAreRescaled:
+    """v1.8.0 divided every candidate ratio by the FX rate for USD reporters.
+    Yahoo's forward P/E is sometimes already in rupiah, so on 15-Sep-2026 INCO's
+    23.0, BRPT's 27.4 and ADRO's forward P/E all printed as 0.0."""
+
+    INCO = {"pe_forward": 23.007717, "pb": 17397.77, "ps": 44600.0, "ev_ebitda": 145270.0, "peg": None}
+    INCO_INFO = {"forwardEps": 203.41, "currentPrice": 4680.0}
+
+    @staticmethod
+    def _rescale(ratios, rate, monkeypatch, extra=None):
+        return TestValuationRatiosAreInTheQuoteCurrency._rescale(
+            ratios, "USD", "IDR", rate, monkeypatch, extra
+        )
+
+    def test_a_forward_pe_that_matches_rupiah_eps_is_left_alone(self, monkeypatch):
+        out, _ = self._rescale(self.INCO, 17630.0, monkeypatch, self.INCO_INFO)
+        assert out["pe_forward"] == pytest.approx(23.01, abs=0.01)
+        assert out["pb"] == pytest.approx(0.99, abs=0.01)
+
+    def test_the_old_behaviour_would_have_printed_zero(self):
+        """Teeth: dividing INCO's forward P/E by the rate rounds to 0.0."""
+        assert round(self.INCO["pe_forward"] / 17630.0, 2) == 0.0
+
+    def test_without_eps_a_small_forward_pe_is_kept(self, monkeypatch):
+        """BRPT: forwardEps 0.0, forwardPE 27.4 -- nothing to check it against,
+        and a mixed ratio could not be that small."""
+        out, _ = self._rescale({"pe_forward": 27.435772, "pb": 62884.613}, 17630.0,
+                               monkeypatch, {"forwardEps": 0.0, "currentPrice": 1635.0})
+        assert out["pe_forward"] == pytest.approx(27.44, abs=0.01)
+        assert out["pb"] == pytest.approx(3.57, abs=0.01)
+
+    def test_a_mixed_forward_pe_is_still_rescaled(self, monkeypatch):
+        """BUMI: 209,999.98 with no forwardEps is a rupiah price over dollar EPS."""
+        out, _ = self._rescale({"pe_forward": 209999.98}, 17630.0, monkeypatch)
+        assert out["pe_forward"] == pytest.approx(11.91, abs=0.01)
+
+    def test_an_eps_check_can_also_find_a_mixed_forward_pe(self, monkeypatch):
+        """A forward P/E that matches price over EPS only after dividing is mixed."""
+        out, _ = self._rescale({"pe_forward": 20.0 * 17630.0}, 17630.0, monkeypatch,
+                               {"forwardEps": 10.0, "currentPrice": 200.0})
+        assert out["pe_forward"] == pytest.approx(20.0, abs=0.01)
+
+    def test_without_a_rate_a_plausible_ratio_survives_and_a_mixed_one_does_not(self, monkeypatch):
+        out, basis = self._rescale({"pe_forward": 27.4, "pb": 62884.6}, None, monkeypatch)
+        assert out["pe_forward"] == 27.4
+        assert out["pb"] is None
+        assert basis == "dropped_unconvertible_usd_statements"
+
+    def test_a_large_negative_mixed_ratio_is_caught_too(self, monkeypatch):
+        out, _ = self._rescale({"ev_ebitda": -410790.0}, 17630.0, monkeypatch)
+        assert out["ev_ebitda"] == pytest.approx(-23.30, abs=0.01)
+
+
+class TestDividendRateIsConvertedToTheQuoteCurrency:
+    """INCO on 15-Sep-2026: trailingAnnualDividendRate 0.004 (USD) over a 4,680
+    rupiah price printed a 0.0% yield."""
+
+    @staticmethod
+    def _yield(info, rate, monkeypatch):
+        from src.tools import financials as fin
+
+        monkeypatch.setattr(fin, "fx_rate", lambda f, t: rate)
+        return fin.dividend_yield_pct(info)
+
+    def test_a_usd_rate_is_converted_before_dividing_by_an_idr_price(self, monkeypatch):
+        info = {"trailingAnnualDividendRate": 0.004, "currentPrice": 4680.0,
+                "financialCurrency": "USD", "currency": "IDR", "dividendYield": 1.66}
+        pct, basis = self._yield(info, 17630.0, monkeypatch)
+        assert pct == pytest.approx(1.51, abs=0.01)
+        assert basis == "trailing_dividend_rate_over_price"
+
+    def test_the_old_behaviour_rounded_to_zero(self):
+        """Teeth."""
+        assert round(0.004 / 4680.0 * 100, 2) == 0.0
+
+    def test_without_a_rate_it_falls_back_to_the_field(self, monkeypatch):
+        info = {"trailingAnnualDividendRate": 0.004, "currentPrice": 4680.0,
+                "financialCurrency": "USD", "currency": "IDR", "dividendYield": 1.66}
+        assert self._yield(info, None, monkeypatch) == (1.66, "dividend_yield_field_percent")
+
+    def test_a_rate_already_in_rupiah_is_not_inflated_into_a_yield(self, monkeypatch):
+        """Converted, a rupiah rate becomes an impossible yield and is not reported."""
+        info = {"trailingAnnualDividendRate": 40.0, "currentPrice": 2120.0,
+                "financialCurrency": "USD", "currency": "IDR", "dividendYield": 1.89}
+        assert self._yield(info, 17630.0, monkeypatch) == (1.89, "dividend_yield_field_percent")
+
+    def test_a_zero_rate_is_absence_not_a_zero_yield(self, monkeypatch):
+        """ADRO and BRPT report 0.0 for a USD rate too small to survive rounding."""
+        info = {"trailingAnnualDividendRate": 0.0, "currentPrice": 1635.0,
+                "financialCurrency": "USD", "currency": "IDR", "dividendYield": 0.1}
+        assert self._yield(info, 17630.0, monkeypatch) == (0.1, "dividend_yield_field_percent")
+
+
+class TestIhsgChangeIsMeasuredAgainstThePriorSession:
+    """15-Sep-2026 10:28 WIB: Yahoo's regularMarketPreviousClose still held
+    Friday's 6,541.38 when Monday had closed at 6,534.69, so the overview printed
+    -0.99% for a -0.89% morning."""
+
+    STALE_INFO = {"regularMarketPrice": 6476.54, "regularMarketPreviousClose": 6541.38,
+                  "previousClose": 6541.38}
+
+    @staticmethod
+    def _history(closes):
+        import pandas as pd
+
+        from src.utils.ohlcv import WIB
+
+        idx = pd.DatetimeIndex([pd.Timestamp(d, tz=WIB) for d in closes])
+        return pd.DataFrame({"Close": list(closes.values())}, index=idx)
+
+    def test_the_change_uses_the_previous_bar_not_the_stale_field(self):
+        from src.tools.market_overview import ihsg_level_and_change
+
+        hist = self._history({"2026-09-11": 6541.38, "2026-09-14": 6534.69, "2026-09-15": 6476.35})
+        out = ihsg_level_and_change(self.STALE_INFO, hist)
+        assert out["previous_close"] == 6534.69
+        assert out["change"] == pytest.approx(-58.34, abs=0.01)
+        assert out["change_percent"] == pytest.approx(-0.89, abs=0.01)
+        assert out["session_date"] == "2026-09-15"
+        assert out["change_basis"] == "prior_session_close_from_history"
+
+    def test_the_stale_field_printed_the_wrong_number(self):
+        """Teeth."""
+        assert round((6476.54 / self.STALE_INFO["regularMarketPreviousClose"] - 1) * 100, 2) == -0.99
+
+    def test_a_pre_open_placeholder_bar_is_ignored(self):
+        import math
+
+        from src.tools.market_overview import ihsg_level_and_change
+
+        hist = self._history({"2026-09-14": 6534.69, "2026-09-15": 6476.35, "2026-09-16": math.nan})
+        out = ihsg_level_and_change({}, hist)
+        assert out["session_date"] == "2026-09-15"
+        assert out["previous_close"] == 6534.69
+
+    def test_without_history_it_falls_back_and_says_so(self):
+        from src.tools.market_overview import ihsg_level_and_change
+
+        out = ihsg_level_and_change(self.STALE_INFO, None)
+        assert out["value"] == 6476.54
+        assert out["change_basis"] == "yahoo_previous_close_field"
+
+    def test_an_unchanged_index_reports_zero_not_null(self):
+        """The old code tested ``if ihsg_change`` and turned a flat day into null."""
+        from src.tools.market_overview import ihsg_level_and_change
+
+        hist = self._history({"2026-09-14": 6534.69, "2026-09-15": 6534.69})
+        out = ihsg_level_and_change({}, hist)
+        assert out["change"] == 0.0
+        assert out["change_percent"] == 0.0
