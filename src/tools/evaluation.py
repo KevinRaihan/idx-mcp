@@ -171,6 +171,37 @@ def _clear_bar_cache() -> None:
 
 # ── outcome resolution ────────────────────────────────────────────────────────
 
+def _open_of(bar) -> float | None:
+    """The session open, or None when the frame does not carry one."""
+    try:
+        value = float(bar["Open"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return value if pd.notna(value) else None
+
+
+def _entry_fill(bar, entry_price: float, is_long: bool) -> tuple[float, bool] | None:
+    """Where a resting limit entry fills on ``bar``, or None if it was never reached.
+
+    Returns ``(fill_price, whole_bar)``. A long limit fills at the open when the
+    session opens at or below it, and at the limit when the session only trades
+    down to it. ``whole_bar`` says whether every print on the bar came after the
+    fill, which decides what that bar may be credited with.
+    """
+    open_ = _open_of(bar)
+    if is_long:
+        if open_ is not None and open_ <= entry_price:
+            return open_, True
+        if float(bar["Low"]) <= entry_price:
+            return entry_price, False
+    else:
+        if open_ is not None and open_ >= entry_price:
+            return open_, True
+        if float(bar["High"]) >= entry_price:
+            return entry_price, False
+    return None
+
+
 def resolve_outcome(
     entry: dict, bars: pd.DataFrame, as_of: datetime, fetch_succeeded: bool = True
 ) -> dict:
@@ -184,6 +215,15 @@ def resolve_outcome(
     to be judged on yet (``pending``), whereas a failed fetch means the thesis
     is unscored for a reason on our side (``no_data``). Reporting the first as
     the second makes a healthy young forward test look broken.
+
+    The logged entry is a resting limit order, not a fill. Scoring from the entry
+    price regardless of whether it traded graded INDF, logged at 7,150 while the
+    stock never went below 7,250, as a position already up 1.4%. A thesis only
+    starts once a bar reaches its entry; until then it is ``awaiting_fill``, and
+    ``not_filled`` once its date passes. On the bar that fills partway through,
+    the stop still counts (price cannot reach it without passing the entry
+    first) but the target does not, because that print may have come before the
+    fill.
     """
     entry_price = float(entry["entry_price"])
     stop = float(entry["stop_loss"])
@@ -195,53 +235,86 @@ def resolve_outcome(
     )
     expired = as_of.date() > target_date.date()
 
-    outcome, exit_price, exit_date, ambiguous = None, None, None, False
+    if bars.empty:
+        return {
+            "outcome": "pending" if fetch_succeeded else "no_data",
+            "note": (
+                "no trading session has closed since this thesis was logged; "
+                "nothing to score yet"
+                if fetch_succeeded
+                else "price history could not be fetched for this ticker"
+            ),
+        }
 
-    for stamp, bar in bars.iterrows():
+    outcome, exit_price, exit_date, ambiguous = None, None, None, False
+    fill_price = fill_i = exit_i = None
+    filled_at_open = False
+
+    for i, (stamp, bar) in enumerate(bars.iterrows()):
+        whole_bar = True
+        if fill_price is None:
+            fill = _entry_fill(bar, entry_price, is_long)
+            if fill is None:
+                continue
+            fill_price, whole_bar = fill
+            fill_i, filled_at_open = i, whole_bar
+
         high, low = float(bar["High"]), float(bar["Low"])
         hit_target = high >= target if is_long else low <= target
         hit_stop = low <= stop if is_long else high >= stop
 
+        stop_exit = stop
+        if hit_stop:
+            # A session that opens beyond the stop cannot be exited at the stop.
+            open_ = _open_of(bar)
+            if open_ is not None and (open_ < stop if is_long else open_ > stop):
+                stop_exit = open_
+
         if hit_target and hit_stop:
             # Daily bars cannot order two touches inside one session. Resolving
             # this as a win would let the forward test grade its own homework.
-            outcome, exit_price, ambiguous = "hit_stop", stop, True
-        elif hit_target:
-            outcome, exit_price = "hit_target", target
+            outcome, exit_price, ambiguous = "hit_stop", stop_exit, True
         elif hit_stop:
-            outcome, exit_price = "hit_stop", stop
+            outcome, exit_price = "hit_stop", stop_exit
+        elif hit_target and whole_bar:
+            outcome, exit_price = "hit_target", target
         else:
+            # Includes a target touched on the bar the entry filled partway
+            # through: that print may have come before the fill.
             continue
 
         exit_date = stamp.date().isoformat()
+        exit_i = i
         break
 
+    if fill_price is None:
+        return {
+            "outcome": "not_filled" if expired else "awaiting_fill",
+            "note": (
+                "price never traded at or through the entry, so no position was "
+                "opened" + ("" if expired else " yet")
+            ),
+            "sessions_checked": int(len(bars)),
+        }
+
     if outcome is None:
-        if bars.empty:
-            return {
-                "outcome": "pending" if fetch_succeeded else "no_data",
-                "note": (
-                    "no trading session has closed since this thesis was logged; "
-                    "nothing to score yet"
-                    if fetch_succeeded
-                    else "price history could not be fetched for this ticker"
-                ),
-            }
         exit_price = float(bars["Close"].iloc[-1])
         exit_date = bars.index[-1].date().isoformat()
+        exit_i = len(bars) - 1
         outcome = "expired" if expired else "open"
 
-    move = (exit_price - entry_price) if is_long else (entry_price - exit_price)
-    return_pct = move / entry_price * 100.0
+    move = (exit_price - fill_price) if is_long else (fill_price - exit_price)
+    return_pct = move / fill_price * 100.0
 
     result = {
         "outcome": outcome,
+        "fill_price": safe_round(fill_price, 2),
+        "fill_date": bars.index[fill_i].date().isoformat(),
+        "filled_at_open": filled_at_open,
         "exit_price": safe_round(exit_price, 2),
         "exit_date": exit_date,
         "return_pct": safe_round(return_pct, 2),
-        "bars_held": int(len(bars)) if outcome in ("open", "expired")
-        else int(bars.index.get_loc(pd.Timestamp(exit_date, tz=bars.index.tz)) + 1)
-        if exit_date else None,
+        "bars_held": int(exit_i - fill_i + 1),
     }
     if ambiguous:
         result["same_bar_ambiguous"] = True
@@ -253,7 +326,7 @@ def resolve_outcome(
     pos = entry.get("position_value_idr")
     if pos:
         fees = float(pos) * (DEFAULT_BUY_FEE + DEFAULT_SELL_FEE)
-        shares = float(pos) / entry_price
+        shares = float(pos) / fill_price
         result["realized_pnl_idr"] = safe_round(shares * move - fees, 0)
         result["fees_idr"] = safe_round(fees, 0)
     return result
@@ -294,6 +367,8 @@ def _summarise(scored: list[dict]) -> dict:
         "expired": sum(1 for s in scored if s["outcome"] == "expired"),
         "open": sum(1 for s in scored if s["outcome"] == "open"),
         "pending": sum(1 for s in scored if s["outcome"] == "pending"),
+        "awaiting_fill": sum(1 for s in scored if s["outcome"] == "awaiting_fill"),
+        "not_filled": sum(1 for s in scored if s["outcome"] == "not_filled"),
         "unscorable": sum(1 for s in scored if s["outcome"] in ("no_data", "no_levels")),
         "realized_win_rate": safe_round(realized_win_rate, 4),
         "mean_predicted_win_prob": safe_round(mean_predicted, 4),
@@ -463,7 +538,8 @@ def _score_all(strategy: str | None, include_open: bool) -> dict:
         row.setdefault("levels_source", "declared")
         scored.append(row)
 
-    visible = scored if include_open else [s for s in scored if s["outcome"] not in ("open", "pending")]
+    unresolved = ("open", "pending", "awaiting_fill")
+    visible = scored if include_open else [s for s in scored if s["outcome"] not in unresolved]
     return {
         "evaluated_at": as_of.isoformat(),
         "log_file": str(log_file),
@@ -477,7 +553,10 @@ def _score_all(strategy: str | None, include_open: bool) -> dict:
             "calibration_gap is mean_predicted_win_prob minus realized_win_rate: "
             "positive means the logged theses were optimistic. Entries whose "
             "levels_source is not 'declared' were reconstructed from a pre-v3 record "
-            "and are weaker evidence than ones logged with explicit levels."
+            "and are weaker evidence than ones logged with explicit levels. "
+            "A thesis opens only when price reaches its entry: awaiting_fill and "
+            "not_filled were never positions and count toward no win rate, return "
+            "or exposure. Returns are measured from fill_price."
         ),
         "disclaimer": (
             "This output is for educational and analytical purposes only. "

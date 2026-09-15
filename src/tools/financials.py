@@ -94,16 +94,39 @@ def yoy_growth(income_stmt) -> tuple[float | None, float | None, str | None]:
     return _growth("Total Revenue"), _growth("Net Income"), prior_end
 
 
-#: Ratios Yahoo forms as (market value in the quote currency) / (statement value
-#: in financialCurrency). When an issuer reports in a currency it does not trade
-#: in, every one of these is off by exactly the FX rate. ``trailingPE`` is not
-#: here: Yahoo's trailing EPS is already in the quote currency.
+#: Ratios Yahoo may form as (market value in the quote currency) / (statement
+#: value in financialCurrency). When an issuer reports in a currency it does not
+#: trade in, a mixed one is off by exactly the FX rate. Each is checked before
+#: it is converted -- see ``_is_currency_mixed``. ``trailingPE`` is not here:
+#: Yahoo's trailing EPS is already in the quote currency.
 CURRENCY_MIXED_RATIOS = ("pe_forward", "pb", "ps", "ev_ebitda")
 
 #: With either currency unknown a ratio cannot be checked, only bounded. A
 #: USD-over-IDR mix inflates by roughly 17,000, so even a 0.06 price-to-book
 #: lands above this, and a genuine reading above it is not usable anyway.
 MAX_UNVERIFIED_RATIO = 1000.0
+
+
+def _is_currency_mixed(key: str, value: float, rate: float | None, info: dict) -> bool:
+    """Whether Yahoo formed this ratio across two currencies.
+
+    Yahoo is not consistent about it. BUMI's forwardPE came back as 209,999.98,
+    a rupiah price over a dollar EPS, while INCO's was 23.0 because its
+    forwardEps of 203.41 is already quoted in rupiah. Dividing every candidate by
+    the rate printed INCO, BRPT and ADRO at a forward P/E of 0.0.
+
+    A mixed ratio is inflated by the exchange rate itself, roughly 17,600 for
+    USD/IDR, so the two readings sit four orders of magnitude apart. Where Yahoo
+    supplies the EPS the forward P/E was built from, whichever reading is closer
+    to price over that EPS is taken; otherwise the magnitude decides.
+    """
+    if key == "pe_forward" and rate:
+        eps = _coerce(info.get("forwardEps"))
+        spot = _coerce(info.get("currentPrice")) or _coerce(info.get("regularMarketPrice"))
+        if eps and eps > 0 and spot:
+            implied = spot / eps
+            return abs(value / rate - implied) < abs(value - implied)
+    return abs(value) > MAX_UNVERIFIED_RATIO
 
 
 def rescale_valuation(ratios: dict, info: dict) -> tuple[dict, str]:
@@ -121,22 +144,23 @@ def rescale_valuation(ratios: dict, info: dict) -> tuple[dict, str]:
         # Unknown is not a match. This path runs whenever Yahoo rate-limits the
         # info call, and it used to report the currencies as matching.
         for key in (*CURRENCY_MIXED_RATIOS, "peg"):
-            if ratios.get(key) is not None and ratios[key] > MAX_UNVERIFIED_RATIO:
+            if ratios.get(key) is not None and abs(ratios[key]) > MAX_UNVERIFIED_RATIO:
                 ratios[key] = None
         return ratios, "currency_unverified"
     if reporting == quote:
         return ratios, "reported_currency_matches_quote_currency"
 
     rate = fx_rate(reporting, quote)
-    if not rate:
-        for key in (*CURRENCY_MIXED_RATIOS, "peg"):
-            ratios[key] = None
-        return ratios, f"dropped_unconvertible_{reporting.lower()}_statements"
-
     for key in CURRENCY_MIXED_RATIOS:
-        if ratios.get(key) is not None:
-            ratios[key] = ratios[key] / rate
+        value = ratios.get(key)
+        if value is None or not _is_currency_mixed(key, value, rate, info):
+            continue
+        # Without a rate a mixed ratio cannot be undone, so it is dropped rather
+        # than passed through at thousands of times its real size.
+        ratios[key] = value / rate if rate else None
     ratios["peg"] = None
+    if not rate:
+        return ratios, f"dropped_unconvertible_{reporting.lower()}_statements"
     return ratios, f"rescaled_from_{reporting.lower()}_at_{rate:g}"
 
 
@@ -417,25 +441,38 @@ MAX_PLAUSIBLE_YIELD_PCT = 30.0
 def dividend_yield_pct(info: dict) -> tuple[float | None, str | None]:
     """Dividend yield as a percentage, plus how it was arrived at.
 
-    yfinance changed the scale of ``dividendYield`` between versions: it used to
-    be a fraction (0.0439) and now returns a percentage (4.39). Multiplying by
-    100 unconditionally reported ISAT at 439% and DMAS at 829%.
+    Two ways of getting this wrong have shipped. yfinance changed
+    ``dividendYield`` from a fraction (0.0439) to a percentage (4.39), and
+    multiplying by 100 unconditionally reported ISAT at 439% and DMAS at 829%.
+    The fix then inferred the scale, treating anything below 1 as a fraction, and
+    read BRPT's 0.1% as 10.0%. The yfinance this project runs returns a
+    percentage, checked against rate over price on 15-Sep-2026: SSIA's 0.29
+    against 5 / 1,730, HRTA's 1.89 against 40 / 2,120. The field is read as that.
 
-    The field alone cannot be disambiguated inside [0, 1] -- 0.8 is either a
-    0.8% yield or an 80% one -- so the rate and price are used where available,
-    which needs no inference at all. The heuristic is only a fallback, and it
-    says so in the returned basis.
+    The rate path has its own trap: ``trailingAnnualDividendRate`` is declared in
+    the reporting currency, so INCO's USD 0.004 over a 4,680 rupiah price printed
+    0.0%. The rate is converted first. A result above the plausibility cap, which
+    is what a rate already in rupiah looks like once multiplied by the FX rate,
+    falls through to the field instead of being reported.
     """
     rate = _coerce(info.get("trailingAnnualDividendRate"))
     spot = _coerce(info.get("currentPrice")) or _coerce(info.get("regularMarketPrice"))
     if rate and spot:
-        return safe_round(rate / spot * 100, 2), "trailing_dividend_rate_over_price"
+        reporting = (info.get("financialCurrency") or "").upper()
+        quote = (info.get("currency") or "").upper()
+        if reporting and quote and reporting != quote:
+            fx = fx_rate(reporting, quote)
+            rate = rate * fx if fx else None
+        if rate:
+            pct = safe_round(rate / spot * 100, 2)
+            if pct is not None and pct <= MAX_PLAUSIBLE_YIELD_PCT:
+                return pct, "trailing_dividend_rate_over_price"
 
     raw = _coerce(info.get("dividendYield"))
     if not raw:
         return None, None
 
-    pct = safe_round(raw * 100 if raw < 1 else raw, 2)
+    pct = safe_round(raw, 2)
     if pct is not None and pct > MAX_PLAUSIBLE_YIELD_PCT:
         return None, "implausible_value_discarded"
-    return pct, "dividend_yield_field_scale_inferred"
+    return pct, "dividend_yield_field_percent"

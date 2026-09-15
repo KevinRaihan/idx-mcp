@@ -10,6 +10,7 @@ from ..scrapers.idx import scrape_sector_indices
 from ..utils.cache import TTLCache, cache
 from ..utils.completeness import mark_partial
 from ..utils.formatting import safe_round
+from ..utils.ohlcv import drop_incomplete_bars
 from ..utils.time_utils import format_wib_iso, get_market_status
 
 logger = logging.getLogger("idx-mcp.tools.market_overview")
@@ -62,33 +63,27 @@ async def get_market_overview(include_macro: bool = True) -> dict:
 async def _build_overview(include_macro: bool) -> dict:
     """Fetch IHSG, sectors, and (optionally) macro data — all concurrently."""
     # Fan out: IHSG + sectors + macro all at once
-    ihsg_coro   = asyncio.to_thread(lambda: yf.Ticker("^JKSE").info)
+    ihsg_coro   = asyncio.to_thread(_ihsg_snapshot)
     sector_coro = _safe_scrape_sectors()
     macro_coro  = _fetch_macro_data() if include_macro else _noop()
 
-    ihsg_info, sectors, macro = await asyncio.gather(
+    ihsg, sectors, macro = await asyncio.gather(
         ihsg_coro, sector_coro, macro_coro,
         return_exceptions=True,
     )
 
     # IHSG
-    if isinstance(ihsg_info, Exception):
-        logger.warning(f"IHSG fetch failed: {ihsg_info}")
-        ihsg_info = {}
-    ihsg_info = ihsg_info or {}
+    if isinstance(ihsg, Exception):
+        logger.warning(f"IHSG fetch failed: {ihsg}")
+        ihsg = ({}, None)
+    ihsg_info, ihsg_history = ihsg
 
-    ihsg_price = _coerce(ihsg_info.get("regularMarketPrice") or ihsg_info.get("previousClose"))
-    ihsg_prev  = _coerce(ihsg_info.get("regularMarketPreviousClose") or ihsg_info.get("previousClose"))
-    ihsg_change     = safe_round(ihsg_price - ihsg_prev, 2) if ihsg_price and ihsg_prev else None
-    ihsg_change_pct = safe_round((ihsg_change / ihsg_prev) * 100, 2) if ihsg_change and ihsg_prev else None
     ihsg_volume     = _coerce(ihsg_info.get("regularMarketVolume")) or 0.0
     volume_trillion = safe_round(ihsg_volume / 1_000_000_000_000, 2) if ihsg_volume else None
 
     result = {
         "ihsg": {
-            "value":             safe_round(ihsg_price, 2),
-            "change":            ihsg_change,
-            "change_percent":    ihsg_change_pct,
+            **ihsg_level_and_change(ihsg_info, ihsg_history),
             "volume_idr_trillion": volume_trillion,
         },
         "market_status": get_market_status(),
@@ -111,6 +106,57 @@ async def _build_overview(include_macro: bool) -> dict:
         "sector_performance means the source did not answer, not that no sector "
         "moved.",
     )
+
+
+def _ihsg_snapshot() -> tuple[dict, object]:
+    """IHSG quote fields and recent daily bars, each allowed to fail on its own."""
+    ticker = yf.Ticker("^JKSE")
+    try:
+        info = ticker.info or {}
+    except Exception as e:
+        logger.warning("IHSG info failed: %s", e)
+        info = {}
+    try:
+        history = ticker.history(period="10d", auto_adjust=False)
+    except Exception as e:
+        logger.warning("IHSG history failed: %s", e)
+        history = None
+    return info, history
+
+
+def ihsg_level_and_change(info: dict, history) -> dict:
+    """IHSG level and change, measured against the previous session's close.
+
+    Yahoo's ``regularMarketPreviousClose`` for ^JKSE can lag a session. On
+    15-Sep-2026 at 10:28 WIB it still held Friday's 6,541.38 when Monday had
+    closed at 6,534.69, and the overview reported -0.99% for a -0.89% morning.
+    The daily history carries both closes, so the change is read from its last
+    two bars. The quote fields are only a fallback, and the basis says which.
+    """
+    closes = None
+    if history is not None and not getattr(history, "empty", True) and "Close" in history:
+        closes = drop_incomplete_bars(history)["Close"]
+
+    session_date = None
+    if closes is not None and len(closes) >= 2:
+        value, prev = float(closes.iloc[-1]), float(closes.iloc[-2])
+        session_date = str(closes.index[-1].date())
+        basis = "prior_session_close_from_history"
+    else:
+        value = _coerce(info.get("regularMarketPrice") or info.get("previousClose"))
+        prev = _coerce(info.get("regularMarketPreviousClose") or info.get("previousClose"))
+        basis = "yahoo_previous_close_field" if value is not None and prev is not None else None
+
+    change = value - prev if value is not None and prev is not None else None
+    change_pct = change / prev * 100 if change is not None and prev else None
+    return {
+        "value": safe_round(value, 2),
+        "change": safe_round(change, 2),
+        "change_percent": safe_round(change_pct, 2),
+        "previous_close": safe_round(prev, 2),
+        "session_date": session_date,
+        "change_basis": basis,
+    }
 
 
 async def _safe_scrape_sectors() -> list:

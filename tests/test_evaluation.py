@@ -76,7 +76,7 @@ def test_target_hit_is_scored_as_a_win():
 
 
 def test_stop_hit_is_scored_as_a_loss():
-    frame = bars([(1_010, 990, 1_000), (1_000, 940, 945)])
+    frame = bars([(1_010, 990, 1_000), (1_000, 940, 955)])
     r = ev.resolve_outcome(thesis(), frame, AS_OF)
     assert r["outcome"] == "hit_stop"
     assert r["exit_price"] == 950.0
@@ -88,7 +88,8 @@ def test_whichever_comes_first_wins_across_bars():
     frame = bars([(1_000, 940, 960), (1_150, 1_000, 1_140)])
     assert ev.resolve_outcome(thesis(), frame, AS_OF)["outcome"] == "hit_stop"
 
-    frame = bars([(1_150, 1_000, 1_140), (1_000, 940, 960)])
+    # Filled on the first bar's open, so the target on day 2 is creditable.
+    frame = bars([(1_010, 990, 1_000), (1_150, 1_000, 1_140), (1_000, 940, 960)])
     assert ev.resolve_outcome(thesis(), frame, AS_OF)["outcome"] == "hit_target"
 
 
@@ -123,7 +124,7 @@ def test_no_bars_is_reported_rather_than_guessed():
 
 def test_short_direction_inverts_the_tests():
     short = thesis(direction="short", stop_loss=1_050.0, target_price=900.0)
-    hit = bars([(1_010, 890, 895)])
+    hit = bars([(1_005, 995, 1_000), (1_010, 890, 895)])
     assert ev.resolve_outcome(short, hit, AS_OF)["outcome"] == "hit_target"
 
     stopped = bars([(1_060, 1_000, 1_055)])
@@ -131,7 +132,7 @@ def test_short_direction_inverts_the_tests():
 
 
 def test_realized_pnl_is_net_of_both_fee_legs():
-    frame = bars([(1_120, 1_050, 1_110)])
+    frame = bars([(1_010, 990, 1_000), (1_120, 1_050, 1_110)])
     r = ev.resolve_outcome(thesis(position_value_idr=10_000_000), frame, AS_OF)
     # 10,000 shares at 1000; +100 each = 1,000,000 gross, less 0.4% of 10m.
     assert r["fees_idr"] == pytest.approx(40_000)
@@ -154,6 +155,90 @@ def test_scoring_starts_the_session_after_the_thesis_was_logged():
 
 def test_bars_after_log_on_an_empty_frame_is_safe():
     assert ev._bars_after_log(pd.DataFrame(), AS_OF).empty
+
+
+# ── entry fills ───────────────────────────────────────────────────────────────
+
+def test_a_limit_the_price_never_reaches_is_awaiting_fill_not_open():
+    """INDF on 2026-09-14: logged at 7,150 while trading 7,225-7,600. The old
+    scorer graded the second bar a win on a position that was never opened."""
+    indf = thesis(entry_price=7_150.0, stop_loss=6_975.0, target_price=7_550.0)
+    frame = bars([(7_350, 7_225, 7_250), (7_600, 7_250, 7_575)])
+    r = ev.resolve_outcome(indf, frame, AS_OF)
+    assert r["outcome"] == "awaiting_fill"
+    assert "fill_price" not in r and "return_pct" not in r
+
+
+def test_an_unfilled_thesis_past_its_date_is_not_filled():
+    frame = bars([(1_050, 1_010, 1_020)])
+    r = ev.resolve_outcome(thesis(), frame, datetime(2026, 10, 5, tzinfo=timezone.utc))
+    assert r["outcome"] == "not_filled"
+
+
+def test_a_gap_down_through_the_limit_fills_at_the_open():
+    frame = bars([(990, 960, 980)])  # opens at 980, below the 1,000 limit
+    r = ev.resolve_outcome(thesis(), frame, AS_OF)
+    assert r["fill_price"] == 980.0
+    assert r["filled_at_open"] is True
+    assert r["return_pct"] == pytest.approx(0.0)
+
+
+def test_a_target_on_the_bar_the_limit_filled_intrabar_is_not_credited():
+    """Opens 1,080, trades down to 1,000 and up to 1,110: the 1,110 may have
+    printed before the fill."""
+    frame = bars([(1_110, 1_000, 1_080)])
+    r = ev.resolve_outcome(thesis(), frame, AS_OF)
+    assert r["outcome"] == "open"
+    assert r["fill_price"] == 1_000.0
+    assert r["filled_at_open"] is False
+
+
+def test_the_target_counts_from_the_session_after_an_intrabar_fill():
+    frame = bars([(1_110, 1_000, 1_080), (1_120, 1_060, 1_100)])
+    assert ev.resolve_outcome(thesis(), frame, AS_OF)["outcome"] == "hit_target"
+
+
+def test_a_stop_on_the_fill_bar_still_counts():
+    """A long cannot reach a stop below its limit without passing the limit first."""
+    frame = bars([(1_040, 940, 1_030)])
+    r = ev.resolve_outcome(thesis(), frame, AS_OF)
+    assert r["outcome"] == "hit_stop"
+    assert r["exit_price"] == 950.0
+
+
+def test_a_gap_through_the_stop_exits_at_the_open_not_the_stop():
+    frame = bars([(1_010, 990, 1_000), (935, 900, 920)])  # opens at 920, below the 950 stop
+    r = ev.resolve_outcome(thesis(), frame, AS_OF)
+    assert r["outcome"] == "hit_stop"
+    assert r["exit_price"] == 920.0
+    assert r["return_pct"] == pytest.approx(-8.0)
+
+
+def test_realized_pnl_is_sized_from_the_fill_price():
+    frame = bars([(990, 960, 980), (1_120, 1_050, 1_110)])
+    r = ev.resolve_outcome(thesis(position_value_idr=9_800_000), frame, AS_OF)
+    # 10,000 shares filled at 980, out at 1,100: +1,200,000 gross, less 0.4% of 9.8m.
+    assert r["realized_pnl_idr"] == pytest.approx(1_200_000 - 39_200)
+    assert r["bars_held"] == 2
+
+
+def test_unfilled_theses_stay_out_of_decided_counts_and_exposure():
+    rows = [_scored("awaiting_fill", 0.5, None), _scored("not_filled", 0.5, None),
+            _scored("hit_target", 0.5, 10.0)]
+    s = ev._summarise(rows)
+    assert s["awaiting_fill"] == 1 and s["not_filled"] == 1
+    assert s["decided"] == 1 and s["logged"] == 3
+    exposure = ev._exposure([{**r, "ticker": "X", "position_value_idr": 1} for r in rows])
+    assert exposure["open_positions"] == 0
+
+
+async def test_include_open_false_also_hides_theses_awaiting_a_fill(monkeypatch):
+    await log_prediction_snapshot("BBCA", 1.0, 0.5, "r", "2099-01-01", "s", **LEVELS)
+    monkeypatch.setattr(ev, "_fetch_bars",
+                        lambda t, s, e: bars([(1_050, 1_010, 1_020)], start=after_log()))
+    r = await ev.evaluate_predictions(include_open=False)
+    assert r["predictions"] == []
+    assert r["summary"]["awaiting_fill"] == 1
 
 
 # ── level recovery for pre-v3 records ─────────────────────────────────────────
@@ -273,7 +358,8 @@ async def test_evaluate_scores_a_logged_thesis(monkeypatch):
     )
 
     monkeypatch.setattr(ev, "_fetch_bars",
-                        lambda t, s, e: bars([(1_120, 1_050, 1_110)], start=after_log()))
+                        lambda t, s, e: bars([(1_010, 990, 1_000), (1_120, 1_050, 1_110)],
+                                             start=after_log()))
     r = await ev.evaluate_predictions()
 
     assert r["summary"]["logged"] == 1
